@@ -4,31 +4,54 @@ from tqdm import tqdm
 from multiprocessing.pool import Pool
 
 
-def fetch_gen_instance(i):
+def gen_instance(arg):
     from gpr.envs.dactyl_reach import make_env
+    from gpr.envs import dactyl_locked
     from gpr.storage.s3_policy_saver import load_policy
+    i, task = arg
 
-    policy = load_policy('rapid_policies/ci/ci-run-ddpg-rubik-reach-1bd9565d/evaluator/policy_latest.npz')
-    env = make_env(randomize=False, her_support=True)
-    obs = env.reset(force_seed=i)
+    if task == 'fetch':
+        policy = load_policy('rapid_policies/ci/ci-run-ddpg-rubik-reach-1bd9565d/evaluator/policy_latest.npz')
+        env = make_env(randomize=True, her_support=True)
+    elif task == 'hand':
+        policy = load_policy('rapid_policies/ci/ci-run-ddpg-rubik-xyz-1bd9565d/evaluator/policy_latest.npz')
+        env = dactyl_locked.make_env(randomize=True, her_support=True)
+
+    obs = env.reset()
+    for _ in range(i):
+        obs = env.reset()
+
+    # env.reset(force_seed=i)
+
+    np.random.seed(i)
     sim = env.unwrapped.sim
 
     obs_list = []
     action_list = []
 
-    for i in range(25):
+    for i in range(500):
         traj_action = []
         traj_obs = []
+
         for j in range(100):
             # random sampling of actions
             #action = env.action_space.sample()
 
             # action ~ pi
+
+            # if (j % 4) == 0:
+            action_random = env.action_space.sample()
+            # else:
+
             action, _ = policy.act(obs)
+            env.step(action + 0.1 * action_random)
+
             obs, _, _, _ = env.step(action)
 
             traj_action.append(np.copy(action))
             traj_obs.append(np.copy(env.unwrapped.sim.data.qpos))
+
+            data_list = dir(env.unwrapped.sim.data)
 
             # For messing
             # print(sim.data.qpos)
@@ -49,16 +72,18 @@ def fetch_gen_instance(i):
 
     return (obs, action)
 
-def fetch_gen():
-    args = list(range(100))
+def gen(task):
+    n = 400
+    args = zip(list(range(n)), [task]*n)
     pool = Pool()
-    dat = pool.map(fetch_gen_instance, args)
+    dat = pool.map(gen_instance, args)
     obs, action = zip(*dat)
     obs = np.concatenate(obs, axis=0)
     action = np.concatenate(action, axis=0)
 
-    np.savez("fetch.npz", obs=obs, action=action)
+    np.savez("{}.npz".format(task), obs=obs, action=action)
 
 
 if __name__ == "__main__":
-    fetch_gen()
+    # Task options are fetch and hand
+    gen('hand')
