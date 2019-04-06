@@ -4,7 +4,8 @@ from tensorflow.python.platform import flags
 from traj_model import TrajNetLatent, TrajNetLatentFC
 import os.path as osp
 import os
-from rl_algs.logger import TensorBoardOutputFormat
+# from rl_algs.logger import TensorBoardOutputFormat
+from baselines.logger import TensorBoardOutputFormat
 from utils import average_gradients, set_seed
 from tqdm import tqdm
 import random
@@ -18,10 +19,9 @@ import torch
 import numpy as np
 import imageio as io
 from itertools import product
-import random
 from custom_adam import AdamOptimizer
 from collections import defaultdict
-from render_utils import render_reach
+# from render_utils import render_reach
 from utils import ReplayBuffer, calculate_frechet_distance
 
 # from inception import get_inception_score
@@ -175,7 +175,7 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
             label = dataloader[:, j-FLAGS.total_frame:j]
             label_i = label[perm_idx[i:i+FLAGS.batch_size]]
             if FLAGS.type == 'random':
-                data_corrupt = np.random.uniform(-1.0, 1.0, (FLAGS.batch_size, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim))
+                data_corrupt = np.random.uniform(-10.0, 10.0, (FLAGS.batch_size, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim))
             elif FLAGS.type == 'past':
                 data_corrupt = label_i
                 data_corrupt += np.random.uniform(-0.3, 0.3, size=data_corrupt.shape)
@@ -236,14 +236,14 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
     X_PLAN = target_vars['X_PLAN']
     x_joint = target_vars['x_joint']
 
-    x_start = np.array([0, 0])[None, None, None, :]
-    x_end = np.array([0.0, 0.0])[None, None, None, :]
+    x_start = np.array([0.8, 0.8])[None, None, None, :]
+    x_end = np.array([1.5, 1.5])[None, None, None, :]
     x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
 
     x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan})[0]
     print(x_joint.shape)
     x, y = zip(*list(x_joint.squeeze()))
-    plt.plot(x, y)
+    plt.plot(x, y, 'bo--')
     plt.savefig("test.png")
     print(x_joint)
 
@@ -254,7 +254,7 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL):
     c = lambda i, x: tf.less(i, FLAGS.num_steps)
 
     def mcmc_step(counter, x_joint):
-        x_joint = x_joint + tf.random_normal(tf.shape(x_joint), mean=0.0, stddev=0.025)
+        x_joint = x_joint + tf.random_normal(tf.shape(x_joint), mean=0.0, stddev=0.02)
         cum_energies = 0
         for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
             print(x_joint[:, i:i+FLAGS.total_frame].get_shape())
@@ -267,7 +267,7 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL):
 
         x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps+1], X_END], axis=1)
         counter = counter + 1
-        x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
+        x_joint = tf.clip_by_value(x_joint, -1.5, 1.5)
 
         return counter, x_joint
 
@@ -420,7 +420,7 @@ def main():
     batch_size = FLAGS.batch_size
 
     if FLAGS.datasource == 'point':
-        model = TrajNetLatent(dim_input=FLAGS.total_frame)
+        model = TrajNetLatentFC(dim_input=FLAGS.total_frame)
         X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
         X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
         ACTION_LABEL = tf.placeholder(shape=(None, FLAGS.total_frame, 2), dtype=tf.float32)

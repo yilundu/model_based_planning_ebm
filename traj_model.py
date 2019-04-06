@@ -136,6 +136,7 @@ class TrajNetLatentFC(object):
         weights = weights.copy()
         batch_size = tf.shape(inp)[0]
 
+        joint = inp
         joint = tf.reshape(joint, (-1, FLAGS.input_objects*self.dim_input*(FLAGS.total_frame)))
 
         if action_label is not None and (not FLAGS.no_cond):

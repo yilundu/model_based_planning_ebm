@@ -1,6 +1,5 @@
 from gpr.envs.dactyl_reach import make_env
-import numpy as np
-from gpr.envs import dactyl_locked
+import numpy as npfrom gpr.envs import dactyl_locked
 
 
 dactyl_reach = make_env(randomize=False, her_support=True)
