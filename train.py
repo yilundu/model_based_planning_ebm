@@ -188,7 +188,7 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
             feed_dict = {X: label_i, X_NOISE: data_corrupt, lr: FLAGS.lr}
 
             if not FLAGS.no_cond:
-                feed_dict[ACTION_LABEL] = actions[perm_idx[i:i+FLAGS.batch_size], j-FLAGS.total_frame:j]
+                feed_dict[ACTION_LABEL] = actions[perm_idx[i:i+FLAGS.batch_size], j-FLAGS.total_frame]
 
             if len(replay_buffer) > FLAGS.batch_size:
                 replay_batch = replay_buffer.sample(FLAGS.batch_size)
@@ -479,7 +479,7 @@ def main():
         model = TrajNetLatentFC(dim_input=FLAGS.total_frame)
         X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
         X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
-        ACTION_LABEL = tf.placeholder(shape=(None, FLAGS.total_frame, 2), dtype=tf.float32)
+        ACTION_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
         ACTION_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps+1, 2), dtype=tf.float32)
 
         X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
