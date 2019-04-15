@@ -1,3 +1,4 @@
+import datetime
 import tensorflow as tf
 import numpy as np
 from tensorflow.python.platform import flags
@@ -39,6 +40,7 @@ flags.DEFINE_integer('data_workers', 6, 'Number of different data workers to loa
 
 # General Experiment Seittings
 flags.DEFINE_string('logdir', 'cachedir', 'location where log of experiments will be stored')
+flags.DEFINE_string('imgdir', 'rollout_images', 'location where image results of experiments will be stored')
 flags.DEFINE_string('exp', 'default', 'name of experiments')
 flags.DEFINE_integer('log_interval', 10, 'log outputs every so many batches')
 flags.DEFINE_integer('save_interval', 1000, 'save outputs every so many batches')
@@ -244,7 +246,13 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
     print(x_joint.shape)
     x, y = zip(*list(x_joint.squeeze()))
     plt.plot(x, y, 'bo--')
-    plt.savefig("test.png")
+
+    imgdir = FLAGS.imgdir
+    if not osp.exists(imgdir):
+        os.makedirs(imgdir)
+    timestamp = str(datetime.datetime.now())
+    save_dir = osp.join(imgdir, 'test_exp{}_iter{}_{}.png'.format(FLAGS.exp, FLAGS.resume_iter, timestamp))
+    plt.savefig(save_dir)
     print(x_joint)
 
 
