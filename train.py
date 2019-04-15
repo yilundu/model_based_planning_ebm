@@ -32,7 +32,7 @@ FLAGS = flags.FLAGS
 
 # Dataset Options
 flags.DEFINE_string('type', 'random', 'random or past for initialization of new frame')
-flags.DEFINE_string('datasource', 'point', 'traj or fetch or hand or 2d toy')
+flags.DEFINE_string('datasource', 'point', 'point or maze')
 flags.DEFINE_integer('batch_size', 256, 'Size of inputs')
 flags.DEFINE_bool('single', False, 'whether to train on a single task')
 flags.DEFINE_integer('data_workers', 6, 'Number of different data workers to load data in parallel')
@@ -92,6 +92,9 @@ FLAGS.batch_size *= FLAGS.num_gpus
 # set_seed(FLAGS.seed)
 
 if FLAGS.datasource == 'point':
+    FLAGS.latent_dim = 2
+    FLAGS.action_dim = 2
+elif FLAGS.datasource == 'maze':
     FLAGS.latent_dim = 2
     FLAGS.action_dim = 2
 
@@ -175,7 +178,7 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
             label = dataloader[:, j-FLAGS.total_frame:j]
             label_i = label[perm_idx[i:i+FLAGS.batch_size]]
             if FLAGS.type == 'random':
-                data_corrupt = np.random.uniform(-10.0, 10.0, (FLAGS.batch_size, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim))
+                data_corrupt = np.random.uniform(-1.0, 1.0, (FLAGS.batch_size, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim))
             elif FLAGS.type == 'past':
                 data_corrupt = label_i
                 data_corrupt += np.random.uniform(-0.3, 0.3, size=data_corrupt.shape)
@@ -236,16 +239,14 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
     X_PLAN = target_vars['X_PLAN']
     x_joint = target_vars['x_joint']
 
-    x_start = np.array([0.8, 0.8])[None, None, None, :]
-    x_end = np.array([1.5, 1.5])[None, None, None, :]
+    x_start = np.array([0.05, -0.1])[None, None, None, :]
+    x_end = np.array([0.25, -0.1])[None, None, None, :]
     x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
 
     x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan})[0]
-    print(x_joint.shape)
     x, y = zip(*list(x_joint.squeeze()))
     plt.plot(x, y, 'bo--')
     plt.savefig("test.png")
-    print(x_joint)
 
 
 def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL):
@@ -254,7 +255,7 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL):
     c = lambda i, x: tf.less(i, FLAGS.num_steps)
 
     def mcmc_step(counter, x_joint):
-        x_joint = x_joint + tf.random_normal(tf.shape(x_joint), mean=0.0, stddev=0.02)
+        x_joint = x_joint + tf.random_normal(tf.shape(x_joint), mean=0.0, stddev=0.01)
         cum_energies = 0
         for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
             print(x_joint[:, i:i+FLAGS.total_frame].get_shape())
@@ -267,7 +268,7 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL):
 
         x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps+1], X_END], axis=1)
         counter = counter + 1
-        x_joint = tf.clip_by_value(x_joint, -1.5, 1.5)
+        x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
 
         return counter, x_joint
 
@@ -333,7 +334,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, LR, optimizer):
             x_grad = tf.gradients(FLAGS.temperature * energy_noise, [x_mod])[0]
             x_mod = x_mod - lr * x_grad
 
-        x_mod = tf.clip_by_value(x_mod, -1.2, 1.2)
+        x_mod = tf.clip_by_value(x_mod, -1.0, 1.0)
 
         counter = counter + 1
 
@@ -419,7 +420,7 @@ def main():
     # Only know the setting for omniglot, not sure about others
     batch_size = FLAGS.batch_size
 
-    if FLAGS.datasource == 'point':
+    if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze':
         model = TrajNetLatentFC(dim_input=FLAGS.total_frame)
         X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
         X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
@@ -466,13 +467,9 @@ def main():
     if FLAGS.datasource == 'point':
         dataset = np.load('point.npz')['obs'][:, :, None, :]
         actions = np.load('point.npz')['action']
-    if FLAGS.datasource == 'fetch':
-        dataset = np.load('fetch.npz')['obs'][:, :, None, :]
-        actions = np.load('fetch.npz')['action']
-    elif FLAGS.datasource == 'hand':
-        dataset = np.load('hand.npz')['obs'][:, :, None, :]
-        dataset = dataset[:, :, :, :]
-        actions = np.load('hand.npz')['action']
+    if FLAGS.datasource == 'maze':
+        dataset = np.load('maze.npz')['obs'][:, :, None, :]
+        actions = np.load('maze.npz')['action']
 
     # dataset_flat = dataset.reshape((-1, dataset.shape[-1]))
     # mean, std = dataset_flat.mean(axis=0), dataset_flat.std(axis=0)
