@@ -106,7 +106,7 @@ class TrajNetLatentFC(object):
         self.dim_output = dim_output
         self.dim_input = dim_input
 
-    def construct_weights(self, scope='', action_size = 2):
+    def construct_weights(self, scope='', action_size=2):
         weights = {}
         dtype = tf.float32
         conv_initializer =  tf.contrib.layers.xavier_initializer_conv2d(dtype=dtype)
@@ -116,7 +116,7 @@ class TrajNetLatentFC(object):
             action_size = 0
 
         with tf.variable_scope(scope):
-            weights['w1'] = get_weight('w1', [FLAGS.input_objects*self.dim_input*(FLAGS.total_frame) + 2,
+            weights['w1'] = get_weight('w1', [FLAGS.input_objects*self.dim_input*(FLAGS.total_frame) + action_size,
                                               self.dim_hidden], spec_norm=FLAGS.spec_norm)
             weights['b1'] = tf.Variable(tf.zeros([self.dim_hidden]), name='b1')
             weights['w2'] = get_weight('w2', [self.dim_hidden, self.dim_hidden], spec_norm=FLAGS.spec_norm)
