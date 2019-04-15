@@ -106,7 +106,7 @@ class TrajNetLatentFC(object):
         self.dim_output = dim_output
         self.dim_input = dim_input
 
-    def construct_weights(self, scope='', action_size = 0):
+    def construct_weights(self, scope='', action_size = 2):
         weights = {}
         dtype = tf.float32
         conv_initializer =  tf.contrib.layers.xavier_initializer_conv2d(dtype=dtype)
@@ -116,7 +116,8 @@ class TrajNetLatentFC(object):
             action_size = 0
 
         with tf.variable_scope(scope):
-            weights['w1'] = get_weight('w1', [FLAGS.input_objects*self.dim_input*(FLAGS.total_frame), self.dim_hidden], spec_norm=FLAGS.spec_norm)
+            weights['w1'] = get_weight('w1', [FLAGS.input_objects*self.dim_input*(FLAGS.total_frame) + 2,
+                                              self.dim_hidden], spec_norm=FLAGS.spec_norm)
             weights['b1'] = tf.Variable(tf.zeros([self.dim_hidden]), name='b1')
             weights['w2'] = get_weight('w2', [self.dim_hidden, self.dim_hidden], spec_norm=FLAGS.spec_norm)
             weights['b2'] = tf.Variable(tf.zeros([self.dim_hidden]), name='b2')
@@ -142,6 +143,7 @@ class TrajNetLatentFC(object):
         if action_label is not None and (not FLAGS.no_cond):
             joint = tf.concat([joint, action_label], axis=1)
 
+        print(weights['w1'].get_shape(), joint.get_shape())
         h1 = tf.nn.leaky_relu(tf.matmul(joint, weights['w1']) + weights['b1'])
         h2 = tf.nn.leaky_relu(tf.matmul(h1, weights['w2']) + weights['b2'])
         h3 = tf.nn.leaky_relu(tf.matmul(h2, weights['w3']) + weights['b3'])

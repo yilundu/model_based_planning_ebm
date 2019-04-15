@@ -237,13 +237,16 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
 def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
     X_START = target_vars['X_START']
     X_END = target_vars['X_END']
-    ACTION_LABEL = target_vars['ACTION_LABEL']
     X_PLAN = target_vars['X_PLAN']
     x_joint = target_vars['x_joint']
+    ACTION_LABEL = target_vars['ACTION_LABEL']
+    ACTION_PLAN = target_vars['ACTION_PLAN']
+    actions = target_vars['actions']
 
     x_start = np.array([0.05, -0.1])[None, None, None, :]
     x_end = np.array([0.25, -0.1])[None, None, None, :]
     x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
+    actions = np.random.uniform(-0.05, 0.05, (1, FLAGS.plan_steps+1, 2))
 
     x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan})[0]
     x, y = zip(*list(x_joint.squeeze()))
@@ -255,10 +258,11 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
     timestamp = str(datetime.datetime.now())
     save_dir = osp.join(imgdir, 'test_exp{}_iter{}_{}.png'.format(FLAGS.exp, FLAGS.resume_iter, timestamp))
     plt.savefig(save_dir)
-    print(x_joint)
+    print("x_joint:", x_joint)
+    print("actions:", actions)
 
 
-def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL):
+def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL):
     x_joint = tf.concat([X_START, X_PLAN, X_END], axis=1)
     steps = tf.constant(0)
     c = lambda i, x: tf.less(i, FLAGS.num_steps)
@@ -288,6 +292,48 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL):
     target_vars['X_END'] = X_END
     target_vars['ACTION_LABEL'] = ACTION_LABEL
     target_vars['X_PLAN'] = X_PLAN
+
+    return target_vars
+
+
+def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN):
+    actions = ACTION_PLAN
+    x_joint = tf.concat([X_START, X_PLAN, X_END], axis=1)
+    steps = tf.constant(0)
+    c = lambda i, x, y: tf.less(i, FLAGS.num_steps)
+
+    def mcmc_step(counter, x_joint, actions):
+        actions = actions + tf.random_normal(tf.shape(actions), mean=0.0, stddev=0.01)
+        x_joint = x_joint + tf.random_normal(tf.shape(x_joint), mean=0.0, stddev=0.01)
+        cum_energies = 0
+        for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
+            print(x_joint[:, i:i + FLAGS.total_frame].get_shape())
+            cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=actions[:, i])
+            cum_energies = cum_energies + cum_energy
+
+        cum_energies = tf.Print(cum_energies, [cum_energies])
+
+        x_grad = tf.gradients(cum_energies, [x_joint])[0]
+        x_joint = x_joint - FLAGS.step_lr * x_grad
+        x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
+        x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
+
+        action_grad = tf.gradients(cum_energies, [actions])[0]
+        actions = actions - FLAGS.step_lr * action_grad
+        actions = tf.clip_by_value(actions, -0.05, 0.05)
+
+        counter = counter + 1
+
+        return counter, x_joint, actions
+
+    steps, x_joint, actions = tf.while_loop(c, mcmc_step, (steps, x_joint, actions))
+    target_vars = {}
+    target_vars['x_joint'] = x_joint
+    target_vars['actions'] = actions
+    target_vars['X_START'] = X_START
+    target_vars['X_END'] = X_END
+    target_vars['X_PLAN'] = X_PLAN
+    target_vars['ACTION_PLAN'] = ACTION_PLAN
 
     return target_vars
 
@@ -434,6 +480,7 @@ def main():
         X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
         X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
         ACTION_LABEL = tf.placeholder(shape=(None, FLAGS.total_frame, 2), dtype=tf.float32)
+        ACTION_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps+1, 2), dtype=tf.float32)
 
         X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
         X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
@@ -442,17 +489,20 @@ def main():
     if FLAGS.no_cond:
         ACTION_LABEL = None
 
-    weights = model.construct_weights(action_size=20)
+    weights = model.construct_weights(action_size=FLAGS.action_dim)
     LR = tf.placeholder(tf.float32, [])
     optimizer = AdamOptimizer(LR, beta1=0.0, beta2=0.999)
 
     if FLAGS.train:
         target_vars = construct_model(model, weights, X_NOISE, X, ACTION_LABEL, LR, optimizer)
     else:
-        target_vars = construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL)
+        if FLAGS.no_cond:
+            target_vars = construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL)
+        else:
+            target_vars = construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN)
 
     sess = tf.InteractiveSession()
-    saver = loader = tf.train.Saver(max_to_keep=10,  keep_checkpoint_every_n_hours=2)
+    saver = loader = tf.train.Saver(max_to_keep=10, keep_checkpoint_every_n_hours=2)
 
     total_parameters = 0
     for variable in tf.trainable_variables():
