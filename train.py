@@ -239,16 +239,17 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
     X_END = target_vars['X_END']
     X_PLAN = target_vars['X_PLAN']
     x_joint = target_vars['x_joint']
-    ACTION_LABEL = target_vars['ACTION_LABEL']
-    ACTION_PLAN = target_vars['ACTION_PLAN']
-    actions = target_vars['actions']
 
     x_start = np.array([0.05, -0.1])[None, None, None, :]
     x_end = np.array([0.25, -0.1])[None, None, None, :]
     x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
-    actions = np.random.uniform(-0.05, 0.05, (1, FLAGS.plan_steps+1, 2))
 
-    x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan})[0]
+    if FLAGS.no_cond:
+        x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan})[0]
+    else:
+        ACTION_PLAN = target_vars['ACTION_PLAN']
+        actions = np.random.uniform(-0.05, 0.05, (1, FLAGS.plan_steps + 1, 2))
+        x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan, ACTION_PLAN: actions})[0]
     x, y = zip(*list(x_joint.squeeze()))
     plt.plot(x, y, 'bo--')
 
