@@ -260,7 +260,7 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
     print("actions:", actions)
 
 
-def get_avg_step_num(target_vars, saver, sess, logdir, dataset_test, actions_test, dataset_train):
+def get_avg_step_num(target_vars, sess):
     step_num = []
     n_exp = FLAGS.n_benchmark_exp
 
@@ -587,7 +587,7 @@ def main():
         train(target_vars, saver, sess, logger, dataset_train, actions_train, resume_itr)
 
     if FLAGS.n_benchmark_exp != 0:
-	    get_avg_step_num(target_vars, saver, sess, logdir, dataset_test, actions_test, dataset_train)
+	    get_avg_step_num(target_vars, sess)
 
     test(target_vars, saver, sess, logdir, dataset_test, actions_test, dataset_train)
 
