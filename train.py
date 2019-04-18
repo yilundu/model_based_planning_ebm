@@ -241,8 +241,6 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
     X_PLAN = target_vars['X_PLAN']
     x_joint = target_vars['x_joint']
 
-    x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan})[0]
-
     x_start = np.array([0., 0.])[None, None, None, :]
     x_end = np.array([0.5, 0.5])[None, None, None, :]
     x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
@@ -295,7 +293,6 @@ def get_avg_step_num(target_vars, sess):
             ACTION_PLAN = target_vars['ACTION_PLAN']
             actions = np.random.uniform(-0.05, 0.05, (1, FLAGS.plan_steps + 1, 2))
             x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan, ACTION_PLAN: actions})[0]
->>>>>>> 6a183c24324045bd2c383eea9208eac1702868fe
 
         x, y = zip(*list(x_joint.squeeze()))
 
