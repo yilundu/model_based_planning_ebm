@@ -1,29 +1,25 @@
 import datetime
-import tensorflow as tf
-import numpy as np
-from tensorflow.python.platform import flags
-from traj_model import TrajNetLatent, TrajNetLatentFC
-import os.path as osp
 import os
+import os.path as osp
+import random
+
+import matplotlib as mpl
+import tensorflow as tf
 # from rl_algs.logger import TensorBoardOutputFormat
 from baselines.logger import TensorBoardOutputFormat
-from utils import average_gradients, set_seed
-from tqdm import tqdm
-import random
-import time as time
-from io import StringIO
-import matplotlib as mpl
+from tensorflow.python.platform import flags
+
+from traj_model import TrajNetLatentFC
+
 mpl.use('Agg')
 import matplotlib.pyplot as plt
 from tensorflow.core.util import event_pb2
 import torch
 import numpy as np
-import imageio as io
 from itertools import product
 from custom_adam import AdamOptimizer
-from collections import defaultdict
 # from render_utils import render_reach
-from utils import ReplayBuffer, calculate_frechet_distance
+from utils import ReplayBuffer
 
 # from inception import get_inception_score
 # from fid import get_fid_score
@@ -87,7 +83,8 @@ flags.DEFINE_string('objective', 'cd', 'objective used to train EBM')
 # Parameters for Planning 
 flags.DEFINE_integer('plan_steps', 10, 'Number of steps of planning')
 
-
+# Number of benchmark experiments
+flags.DEFINE_integer('n_benchmark_exp', 0, 'Number of benchmark experiments')
 
 FLAGS.batch_size *= FLAGS.num_gpus
 
@@ -240,8 +237,8 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
     X_PLAN = target_vars['X_PLAN']
     x_joint = target_vars['x_joint']
 
-    x_start = np.array([0.05, -0.1])[None, None, None, :]
-    x_end = np.array([0.25, -0.1])[None, None, None, :]
+    x_start = np.array([0., 0.])[None, None, None, :]
+    x_end = np.array([0.5, 0.5])[None, None, None, :]
     x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
 
     if FLAGS.no_cond:
@@ -261,6 +258,47 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
     plt.savefig(save_dir)
     print("x_joint:", x_joint)
     print("actions:", actions)
+
+
+def get_avg_step_num(target_vars, saver, sess, logdir, dataset_test, actions_test, dataset_train):
+    step_num = []
+    n_exp = FLAGS.n_benchmark_exp
+
+    for i in range(n_exp):
+        X_START = target_vars['X_START']
+        X_END = target_vars['X_END']
+        X_PLAN = target_vars['X_PLAN']
+        x_joint = target_vars['x_joint']
+
+        x_start = np.array([0., 0.])[None, None, None, :]
+        x_end = np.array([0.5, 0.5])[None, None, None, :]
+        x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
+
+        if FLAGS.no_cond:
+            x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan})[0]
+        else:
+            ACTION_PLAN = target_vars['ACTION_PLAN']
+            actions = np.random.uniform(-0.05, 0.05, (1, FLAGS.plan_steps + 1, 2))
+            x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan, ACTION_PLAN: actions})[0]
+
+        x, y = zip(*list(x_joint.squeeze()))
+
+        step_num.append(len(x))
+
+    plt.plot(step_num)
+    imgdir = FLAGS.imgdir
+    if not osp.exists(imgdir):
+        os.makedirs(imgdir)
+    timestamp = str(datetime.datetime.now())
+    save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}.png'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
+                                                                       FLAGS.resume_iter, timestamp))
+    if FLAGS.no_cond:
+        plt.title("action unconditional")
+    else:
+        plt.title("aciton conditional")
+    plt.savefig(save_dir)
+    plt.close()
+    print("average number of steps:", sum(step_num) / len(step_num))
 
 
 def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL):
@@ -547,6 +585,9 @@ def main():
 
     if FLAGS.train:
         train(target_vars, saver, sess, logger, dataset_train, actions_train, resume_itr)
+
+    if FLAGS.n_benchmark_exp != 0:
+	    get_avg_step_num(target_vars, saver, sess, logdir, dataset_test, actions_test, dataset_train)
 
     test(target_vars, saver, sess, logdir, dataset_test, actions_test, dataset_train)
 
