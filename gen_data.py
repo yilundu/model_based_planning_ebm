@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 
 def gen_simple():
     # Free form movement on entire unit square from -1 to 1
-    batch_size = 100000
+    batch_size = 1000000
     traj_length = 100
     ob = np.random.uniform(-1, 1, (batch_size, 2))
     action = np.random.uniform(-0.05, 0.05, (batch_size, traj_length, 2))
@@ -25,7 +25,7 @@ def is_maze_valid(dat):
     # Generate an indicator function for whether a point is valid in a hand designed
     # maze given dat (n x 2) array of data_points
 
-    segs = 10
+    segs = 4
     oob_mask = np.any(oob(dat), axis=1)
     # dat = dat[~data_mask]
 
@@ -40,14 +40,18 @@ def is_maze_valid(dat):
 def gen_maze():
     # Generate a dataset with of obstacles through which particles are not able to 
     # move through
-    batch_size = 200000
+    batch_size = 2000000
     traj_length = 100
     ob = np.random.uniform(-1, 1, (batch_size, 2))
     ob_mask = is_maze_valid(ob)
     ob = ob[ob_mask]
 
+    plt.scatter(ob[:, 0], ob[:, 1])
+    plt.savefig("maze.png")
+    plt.clf()
+
     obs = [ob.copy()]
-    actions = np.random.uniform(-0.1, 0.1, (ob.shape[0], traj_length, 2))
+    actions = np.random.uniform(-0.05, 0.05, (ob.shape[0], traj_length, 2))
 
     for i in range(1, traj_length):
         new_ob = ob + actions[:, i-1]

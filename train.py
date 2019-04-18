@@ -24,6 +24,9 @@ from custom_adam import AdamOptimizer
 from collections import defaultdict
 # from render_utils import render_reach
 from utils import ReplayBuffer, calculate_frechet_distance
+import seaborn as sns
+
+sns.set()
 
 # from inception import get_inception_score
 # from fid import get_fid_score
@@ -86,6 +89,7 @@ flags.DEFINE_string('objective', 'cd', 'objective used to train EBM')
 
 # Parameters for Planning 
 flags.DEFINE_integer('plan_steps', 10, 'Number of steps of planning')
+flags.DEFINE_bool('seq_plan', False, 'Whether to use joint planning or sequential planning')
 
 
 
@@ -171,7 +175,7 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
     print(dataloader.shape)
     random_combo = list(product(range(FLAGS.total_frame, dataloader.shape[1]-FLAGS.total_frame), range(0, dataloader.shape[0]-FLAGS.batch_size, FLAGS.batch_size)))
 
-    replay_buffer = ReplayBuffer(10000)
+    replay_buffer = ReplayBuffer(50000)
 
     for epoch in range(FLAGS.epoch_num):
         random.shuffle(random_combo)
@@ -192,7 +196,7 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
 
             if len(replay_buffer) > FLAGS.batch_size:
                 replay_batch = replay_buffer.sample(FLAGS.batch_size)
-                replay_mask = (np.random.uniform(0, 1, (FLAGS.batch_size)) > 0.1)
+                replay_mask = (np.random.uniform(0, 1, (FLAGS.batch_size)) > 0.01)
                 replay_batch = np.clip(replay_batch, -1, 1)
                 data_corrupt[replay_mask] = replay_batch[replay_mask]
 
@@ -241,21 +245,26 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
     X_PLAN = target_vars['X_PLAN']
     x_joint = target_vars['x_joint']
 
-    x_start = np.array([0.05, -0.1])[None, None, None, :]
-    x_end = np.array([0.25, -0.1])[None, None, None, :]
+    x_start = np.array([0.0, 0.0])[None, None, None, :]
+    x_end = np.array([0.5, 0.5])[None, None, None, :]
     x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
 
+    n = 32
+    x_start, x_end, x_plan = np.tile(x_start, (n, 1, 1, 1)), np.tile(x_end, (n, 1, 1, 1)), np.tile(x_plan, (n, 1, 1, 1))
     x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan})[0]
-    x, y = zip(*list(x_joint.squeeze()))
-    plt.plot(x, y, 'bo--')
+
+    for i in range(n):
+        x_joint_i = x_joint[i]
+        x, y = zip(*list(x_joint_i.squeeze()))
+        plt.plot(x, y)
 
     imgdir = FLAGS.imgdir
     if not osp.exists(imgdir):
         os.makedirs(imgdir)
+
     timestamp = str(datetime.datetime.now())
     save_dir = osp.join(imgdir, 'test_exp{}_iter{}_{}.png'.format(FLAGS.exp, FLAGS.resume_iter, timestamp))
     plt.savefig(save_dir)
-    print(x_joint)
 
 
 def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL):
@@ -264,19 +273,62 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL):
     c = lambda i, x: tf.less(i, FLAGS.num_steps)
 
     def mcmc_step(counter, x_joint):
-        x_joint = x_joint + tf.random_normal(tf.shape(x_joint), mean=0.0, stddev=0.01)
         cum_energies = 0
-        for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
-            print(x_joint[:, i:i+FLAGS.total_frame].get_shape())
-            cum_energy = model.forward(x_joint[:, i:i+FLAGS.total_frame], weights, action_label=ACTION_LABEL)
-            cum_energies = cum_energies + cum_energy
 
-        cum_energies = tf.Print(cum_energies, [cum_energies])
-        x_grad = tf.gradients(cum_energies, [x_joint])[0]
-        x_joint = x_joint - FLAGS.step_lr * x_grad
+        # Code for doing joint sampling over all possible states
+        # for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
+        #     cum_energy = model.forward(x_joint[:, i:i+FLAGS.total_frame], weights, action_label=ACTION_LABEL)
+        #     cum_energies = cum_energies + cum_energy
 
+        # cum_energies = tf.Print(cum_energies, [cum_energies])
+        # x_grad = tf.gradients(cum_energies, [x_joint])[0]
+        # x_joint = x_joint - FLAGS.step_lr * x_grad
+
+        # Code for doing sampling for beginning to end and then from end to beginning
+        cum_energies = []
+
+        if FLAGS.seq_plan:
+            for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
+                x_temp = x_joint[:, i:i+FLAGS.total_frame]
+                x_temp = x_temp + tf.random_normal(tf.shape(x_temp), mean=0.0, stddev=0.1)
+                cum_energy = model.forward(x_temp, weights, action_label=ACTION_LABEL)
+                x_grad = tf.gradients(cum_energy, [x_temp])[0]
+                x_new = x_joint[:, i:i+FLAGS.total_frame] - FLAGS.step_lr * tf.cast(counter, tf.float32) / FLAGS.num_steps * x_grad
+
+                x_joint = tf.concat([x_joint[:, :i], x_new, x_joint[:, i+FLAGS.total_frame:]], axis=1)
+
+                cum_energies.append(cum_energy)
+
+            x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps+1], X_END], axis=1)
+
+            for i in range(FLAGS.plan_steps - FLAGS.total_frame + 2, -1):
+                x_temp = x_joint[:, i:i+FLAGS.total_frame]
+                x_temp = x_temp + tf.random_normal(tf.shape(x_temp), mean=0.0, stddev=0.1)
+                cum_energy = model.forward(x_temp, weights, action_label=ACTION_LABEL)
+                x_grad = tf.gradients(cum_energy, [x_temp])[0]
+
+                x_new = x_joint[:, i:i+FLAGS.total_frame] - FLAGS.step_lr * tf.cast(counter, tf.float32) / FLAGS.num_steps * x_grad
+                x_joint = tf.concat([x_joint[:, :i], x_new, x_joint[:, i+FLAGS.total_frame:]], axis=1)
+
+                cum_energies.append(cum_energy)
+
+            cum_energies = tf.concat(cum_energies, axis=1)
+        else:
+            x_joint = x_joint + tf.random_normal(tf.shape(x_joint), mean=0.0, stddev=0.01)
+            for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
+                x_temp = x_joint[:, i:i+FLAGS.total_frame]
+                cum_energy = model.forward(x_temp, weights, action_label=ACTION_LABEL)
+                cum_energies.append(cum_energy)
+
+            cum_energies = tf.reduce_sum(tf.concat(cum_energies, axis=1), axis=1)
+            x_grad = tf.gradients(cum_energies, [x_joint])[0]
+            x_joint = x_joint - FLAGS.step_lr * tf.cast(counter, tf.float32) / FLAGS.num_steps * x_grad
+
+        # Reset the start and end states to be previous values
         x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps+1], X_END], axis=1)
         counter = counter + 1
+
+        counter = tf.Print(counter, [tf.reduce_mean(cum_energies), tf.reduce_max(cum_energies), tf.reduce_min(cum_energies)])
         x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
 
         return counter, x_joint
@@ -318,22 +370,21 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, LR, optimizer):
             # User energies to set movement speed in derivative free optimization
             energy_noise = FLAGS.temperature * model.forward(x_mod, weights, action_label=ACTION_LABEL, reuse=True)
             energy_noise = tf.reshape(energy_noise, (x_mod_neg_shape[0], 1, 1, 1, 1))
-            x_noise =  tf.random_normal(x_mod_neg_shape, mean=0.0, stddev=0.1)
+            x_noise =  tf.random_normal(x_mod_neg_shape, mean=0.0, stddev=0.05)
             x_mod_stack = x_mod_neg = x_mod_neg + x_noise
             x_mod_neg = tf.reshape(x_mod_neg, (x_mod_neg_shape[0]*x_mod_neg_shape[1], x_mod_neg_shape[2], x_mod_neg_shape[3], x_mod_neg_shape[4]))
 
-            # Tile the label tensor
-            label_noise = tf.tile(tf.expand_dims(LABEL_SPLIT[j], axis=1), (1, FLAGS.noise_sim, 1, 1, 1))
-            label_shape = tf.shape(label_noise)
-            label_noise = tf.reshape(label_noise, (label_shape[0]*label_shape[1], label_shape[2], label_shape[3], label_shape[4]))
-
-            action_label_tile = tf.reshape(tf.tile(tf.expand_dims(ACTION_LABEL, dim=1), (1, FLAGS.noise_sim, 1)), (FLAGS.batch_size * FLAGS.noise_sim, -1))
+            if ACTION_LABEL is not None:
+                action_label_tile = tf.reshape(tf.tile(tf.expand_dims(ACTION_LABEL, dim=1), (1, FLAGS.noise_sim, 1)), (FLAGS.batch_size * FLAGS.noise_sim, -1))
+            else:
+                action_label_tile = None
 
             energy_noise = -FLAGS.temperature * model.forward(x_mod_neg, weights, action_label=action_label_tile, reuse=True)
             energy_noise = tf.reshape(energy_noise, (x_mod_neg_shape[0], FLAGS.noise_sim))
             energy_wt = tf.nn.softmax(energy_noise, axis=1)
             energy_wt = tf.reshape(energy_wt, (x_mod_neg_shape[0], FLAGS.noise_sim, 1, 1, 1))
             loss_energy_wt = tf.reshape(energy_wt, (-1, 1))
+            loss_energy_noise = tf.reshape(energy_noise, (-1, 1))
             x_mod = tf.reduce_sum(energy_wt * x_mod_stack, axis=1)
             loss_energy_neg = loss_energy_noise * loss_energy_wt
         else:
@@ -343,7 +394,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, LR, optimizer):
             x_grad = tf.gradients(FLAGS.temperature * energy_noise, [x_mod])[0]
             x_mod = x_mod - lr * x_grad
 
-        x_mod = tf.clip_by_value(x_mod, -1.0, 1.0)
+        x_mod = tf.clip_by_value(x_mod, -1.2, 1.2)
 
         counter = counter + 1
 
@@ -442,7 +493,7 @@ def main():
     if FLAGS.no_cond:
         ACTION_LABEL = None
 
-    weights = model.construct_weights(action_size=20)
+    weights = model.construct_weights(action_size=2)
     LR = tf.placeholder(tf.float32, [])
     optimizer = AdamOptimizer(LR, beta1=0.0, beta2=0.999)
 

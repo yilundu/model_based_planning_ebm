@@ -136,15 +136,18 @@ class TrajNetLatentFC(object):
         weights = weights.copy()
         batch_size = tf.shape(inp)[0]
 
+        def swish(inp):
+            return inp * tf.nn.sigmoid(inp)
+
         joint = inp
         joint = tf.reshape(joint, (-1, FLAGS.input_objects*self.dim_input*(FLAGS.total_frame)))
 
         if action_label is not None and (not FLAGS.no_cond):
             joint = tf.concat([joint, action_label], axis=1)
 
-        h1 = tf.nn.leaky_relu(tf.matmul(joint, weights['w1']) + weights['b1'])
-        h2 = tf.nn.leaky_relu(tf.matmul(h1, weights['w2']) + weights['b2'])
-        h3 = tf.nn.leaky_relu(tf.matmul(h2, weights['w3']) + weights['b3'])
+        h1 = swish(tf.matmul(joint, weights['w1']) + weights['b1'])
+        h2 = swish(tf.matmul(h1, weights['w2']) + weights['b2'])
+        h3 = swish(tf.matmul(h2, weights['w3']) + weights['b3'])
         energy = tf.matmul(h3, weights['w6'])
 
         return energy
