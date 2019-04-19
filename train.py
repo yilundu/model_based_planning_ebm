@@ -19,7 +19,7 @@ import numpy as np
 from itertools import product
 from custom_adam import AdamOptimizer
 # from render_utils import render_reach
-from utils import ReplayBuffer, calculate_frechet_distance
+from utils import ReplayBuffer
 import seaborn as sns
 
 sns.set()
@@ -89,6 +89,10 @@ flags.DEFINE_bool('seq_plan', False, 'Whether to use joint planning or sequentia
 
 # Number of benchmark experiments
 flags.DEFINE_integer('n_benchmark_exp', 0, 'Number of benchmark experiments')
+flags.DEFINE_float('start1', 0.0, 'x_start, x')
+flags.DEFINE_float('start2', 0.0, 'x_start, y')
+flags.DEFINE_float('end1', 0.5, 'x_end, x')
+flags.DEFINE_float('end2', 0.5, 'x_end, y')
 
 FLAGS.batch_size *= FLAGS.num_gpus
 
@@ -272,10 +276,21 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
     plt.savefig(save_dir)
 
 
+def log_step_num_exp(d):
+    import csv
+    with open('get_avg_step_num_log.csv', mode='a+') as csv_file:
+        fieldnames = ['ts', 'start', 'end', 'plan_steps', 'no_cond', 'step_num', 'exp', 'iter']
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writerow(d)
+
 
 def get_avg_step_num(target_vars, sess):
     step_num = []
     n_exp = FLAGS.n_benchmark_exp
+    plan_steps = FLAGS.plan_steps
+    no_cond = 'True' if FLAGS.no_cond else 'False'
+    start_arr = [FLAGS.start1, FLAGS.start2]
+    end_arr = [FLAGS.end1, FLAGS.end2]
 
     for i in range(n_exp):
         X_START = target_vars['X_START']
@@ -283,20 +298,40 @@ def get_avg_step_num(target_vars, sess):
         X_PLAN = target_vars['X_PLAN']
         x_joint = target_vars['x_joint']
 
-        x_start = np.array([0., 0.])[None, None, None, :]
-        x_end = np.array([0.5, 0.5])[None, None, None, :]
-        x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
+        x_start = np.array(start_arr)[None, None, None, :]
+        x_end = np.array(end_arr)[None, None, None, :]
+        x_plan = np.random.uniform(-1, 1, (1, plan_steps, 1, 2))
 
         if FLAGS.no_cond:
             x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan})[0]
         else:
             ACTION_PLAN = target_vars['ACTION_PLAN']
-            actions = np.random.uniform(-0.05, 0.05, (1, FLAGS.plan_steps + 1, 2))
+            actions = np.random.uniform(-0.05, 0.05, (1, plan_steps + 1, 2))
             x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan, ACTION_PLAN: actions})[0]
 
         x, y = zip(*list(x_joint.squeeze()))
+        plt.plot(x, y)
+
+        imgdir = FLAGS.imgdir
+        if not osp.exists(imgdir):
+            os.makedirs(imgdir)
+
+        timestamp = str(datetime.datetime.now())
+        save_dir = osp.join(imgdir, 'test_exp{}_iter{}_{}.png'.format(FLAGS.exp, FLAGS.resume_iter, timestamp))
+        plt.savefig(save_dir)
 
         step_num.append(len(x))
+
+        ts = str(datetime.datetime.now())
+        d = {'ts': ts,
+             'start': start_arr,
+             'end': end_arr,
+             'plan_steps': plan_steps,
+             'no_cond': no_cond,
+             'step_num': len(x),
+             'exp': FLAGS.exp,
+             'iter': FLAGS.resume_iter}
+        log_step_num_exp(d)
 
     plt.plot(step_num)
     imgdir = FLAGS.imgdir
@@ -310,7 +345,7 @@ def get_avg_step_num(target_vars, sess):
     else:
         plt.title("aciton conditional")
     plt.savefig(save_dir)
-    plt.close()
+    plt.clf()
     print("average number of steps:", sum(step_num) / len(step_num))
 
 
@@ -642,9 +677,9 @@ def main():
         train(target_vars, saver, sess, logger, dataset_train, actions_train, resume_itr)
 
     if FLAGS.n_benchmark_exp != 0:
-	    get_avg_step_num(target_vars, sess)
-
-    test(target_vars, saver, sess, logdir, dataset_test, actions_test, dataset_train)
+        get_avg_step_num(target_vars, sess)
+    else:
+        test(target_vars, saver, sess, logdir, dataset_test, actions_test, dataset_train)
 
 if __name__ == "__main__":
     main()
