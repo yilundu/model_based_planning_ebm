@@ -76,7 +76,7 @@ class TrajNetLatent(object):
         joint_compact = tf.reshape(joint, (joint_shape[0] * FLAGS.input_objects * joint_shape[1], joint_shape[3]))
         joint_compact = act(tf.matmul(joint_compact, weights['w_upscale']) + weights['b_upscale'])
 
-        if action_label is not None:
+        if action_label is not None and FLAGS.cond:
             weight_action = tf.tile(tf.matmul(action_label, weights['action_w']), (joint_shape[1] * FLAGS.input_objects, 1))
             weight_bias = tf.tile(tf.matmul(action_label, weights['action_b']), (joint_shape[1] * FLAGS.input_objects, 1))
             joint_compact = joint_compact * weight_action + weight_bias
@@ -112,7 +112,7 @@ class TrajNetLatentFC(object):
         conv_initializer =  tf.contrib.layers.xavier_initializer_conv2d(dtype=dtype)
         fc_initializer =  tf.contrib.layers.xavier_initializer(dtype=dtype)
 
-        if FLAGS.no_cond:
+        if not FLAGS.cond:
             action_size = 0
 
         with tf.variable_scope(scope):
@@ -141,14 +141,64 @@ class TrajNetLatentFC(object):
             return inp * tf.nn.sigmoid(inp)
 
         joint = inp
+        print(joint.get_shape())
         joint = tf.reshape(joint, (-1, FLAGS.input_objects*self.dim_input*(FLAGS.total_frame)))
 
-        if action_label is not None and (not FLAGS.no_cond):
+        if action_label is not None and (FLAGS.cond):
             joint = tf.concat([joint, action_label], axis=1)
 
         h1 = swish(tf.matmul(joint, weights['w1']) + weights['b1'])
         h2 = swish(tf.matmul(h1, weights['w2']) + weights['b2'])
         h3 = swish(tf.matmul(h2, weights['w3']) + weights['b3'])
         energy = tf.matmul(h3, weights['w6'])
+
+        return energy
+
+
+class TrajInverseDynamics(object):
+    """Construct the convolutional network specified in MAML"""
+
+    def __init__(self, dim_input=2, num_filters=32, dim_output=2, action_dim=20):
+
+        self.dim_hidden = num_filters
+        self.dim_output = dim_output
+        self.dim_input = dim_input
+
+    def construct_weights(self, scope='', weights={}):
+        dtype = tf.float32
+        conv_initializer = tf.contrib.layers.xavier_initializer_conv2d(dtype=dtype)
+        fc_initializer = tf.contrib.layers.xavier_initializer(dtype=dtype)
+
+        with tf.variable_scope(scope):
+            weights['inv_w1'] = get_weight('w1',
+                                       [FLAGS.input_objects * self.dim_input * (FLAGS.total_frame),
+                                        self.dim_hidden], spec_norm=FLAGS.spec_norm)
+            weights['inv_b1'] = tf.Variable(tf.zeros([self.dim_hidden]), name='b1')
+            weights['inv_w2'] = get_weight('w2', [self.dim_hidden, self.dim_hidden], spec_norm=FLAGS.spec_norm)
+            weights['inv_b2'] = tf.Variable(tf.zeros([self.dim_hidden]), name='b2')
+            weights['inv_w3'] = get_weight('w3', [self.dim_hidden, self.dim_hidden], spec_norm=FLAGS.spec_norm)
+            weights['inv_b3'] = tf.Variable(tf.zeros([self.dim_hidden]), name='b3')
+            weights['inv_w6'] = get_weight('w6', [self.dim_hidden, self.dim_output], spec_norm=FLAGS.spec_norm)
+
+        return weights
+
+    def forward(self, inp, weights, reuse=False, scope='', stop_grad=False, stop_at_grad=False, noise=True,
+                action_label=False):
+        weights = weights.copy()
+        batch_size = tf.shape(inp)[0]
+
+        def swish(inp):
+            return inp * tf.nn.sigmoid(inp)
+
+        joint = inp
+        joint = tf.reshape(joint, (-1, FLAGS.input_objects * self.dim_input * (FLAGS.total_frame)))
+
+        if action_label is not None and FLAGS.cond:
+            joint = tf.concat([joint, action_label], axis=1)
+
+        h1 = swish(tf.matmul(joint, weights['inv_w1']) + weights['inv_b1'])
+        h2 = swish(tf.matmul(h1, weights['inv_w2']) + weights['inv_b2'])
+        h3 = swish(tf.matmul(h2, weights['inv_w3']) + weights['inv_b3'])
+        energy = tf.matmul(h3, weights['inv_w6'])
 
         return energy
