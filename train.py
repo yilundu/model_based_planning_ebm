@@ -245,8 +245,8 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
     X_PLAN = target_vars['X_PLAN']
     x_joint = target_vars['x_joint']
 
-    x_start = np.array([0., 0.])[None, None, None, :]
-    x_end = np.array([0.5, 0.5])[None, None, None, :]
+    x_start = np.array([-0.8, -0.8])[None, None, None, :]
+    x_end = np.array([0.8, 0.8])[None, None, None, :]
     x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
 
     n = 32
