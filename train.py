@@ -310,6 +310,7 @@ def get_avg_step_num(target_vars, sess):
             x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan, ACTION_PLAN: actions})[0]
 
         x, y = zip(*list(x_joint.squeeze()))
+        plt.clf()
         plt.plot(x, y)
 
         imgdir = FLAGS.imgdir
@@ -333,6 +334,7 @@ def get_avg_step_num(target_vars, sess):
              'iter': FLAGS.resume_iter}
         log_step_num_exp(d)
 
+    plt.clf()
     plt.plot(step_num)
     imgdir = FLAGS.imgdir
     if not osp.exists(imgdir):
@@ -345,7 +347,6 @@ def get_avg_step_num(target_vars, sess):
     else:
         plt.title("aciton conditional")
     plt.savefig(save_dir)
-    plt.clf()
     print("average number of steps:", sum(step_num) / len(step_num))
 
 
