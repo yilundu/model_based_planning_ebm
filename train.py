@@ -9,7 +9,7 @@ import tensorflow as tf
 from baselines.logger import TensorBoardOutputFormat
 from tensorflow.python.platform import flags
 
-from traj_model import TrajNetLatentFC
+from traj_model import TrajNetLatentFC, TrajInverseDynamics
 
 mpl.use('Agg')
 import matplotlib.pyplot as plt
@@ -69,9 +69,10 @@ flags.DEFINE_integer('action_dim', 24, 'Number of dimension for encoding action 
 # Custom EBM Architecture
 flags.DEFINE_integer('total_frame', 2, 'Number of frames to train the energy model')
 flags.DEFINE_bool('replay_batch', True, 'Whether to use a replay buffer for samples')
-flags.DEFINE_bool('no_cond', True, 'Whether to condition on actions')
+flags.DEFINE_bool('cond', False, 'Whether to condition on actions')
 flags.DEFINE_bool('zero_kl', True, 'whether to make the kl be zero')
 flags.DEFINE_integer('temperature', 1, 'Temperature for energy function')
+flags.DEFINE_bool('inverse_dynamics', False, 'Whether to train a inverse dynamics model')
 
 # Projected gradient descent
 flags.DEFINE_float('proj_norm', 0.00, 'Maximum change of input images')
@@ -162,11 +163,13 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
     weights = target_vars['weights']
     lr = target_vars['lr']
     ACTION_LABEL = target_vars['ACTION_LABEL']
+    dyn_loss = target_vars['dyn_loss']
 
     gvs_dict = dict(gvs)
 
     # remove gradient logging since it is slow
-    log_output = [train_op, energy_pos, energy_neg, loss_energy, loss_ml, loss_total, x_grad, x_off, x_mod, *gvs_dict.keys()]
+    log_output = [train_op, dyn_loss, energy_pos, energy_neg, loss_energy, loss_ml, loss_total, x_grad, x_off, x_mod,
+                  *gvs_dict.keys()]
     output = [train_op, x_mod]
 
     itr = resume_iter
@@ -192,8 +195,7 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
 
             feed_dict = {X: label_i, X_NOISE: data_corrupt, lr: FLAGS.lr}
 
-            if not FLAGS.no_cond:
-                feed_dict[ACTION_LABEL] = actions[perm_idx[i:i+FLAGS.batch_size], j-FLAGS.total_frame]
+            feed_dict[ACTION_LABEL] = actions[perm_idx[i:i+FLAGS.batch_size], j-FLAGS.total_frame]
 
             if len(replay_buffer) > FLAGS.batch_size:
                 replay_batch = replay_buffer.sample(FLAGS.batch_size)
@@ -202,13 +204,15 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
                 data_corrupt[replay_mask] = replay_batch[replay_mask]
 
             if itr % FLAGS.log_interval == 0:
-                _, e_pos, e_neg, loss_e, loss_ml, loss_total, x_grad, x_off, x_mod, *grads = sess.run(log_output, feed_dict)
+                _, dyn_loss, e_pos, e_neg, loss_e, loss_ml, loss_total, x_grad, x_off, x_mod, *grads = sess.run(
+                    log_output, feed_dict)
 
                 kvs = {}
                 kvs['e_pos'] = e_pos.mean()
                 kvs['temp'] = temp
                 kvs['e_neg'] = e_neg.mean()
                 kvs['loss_e'] = loss_e.mean()
+                kvs['dyn_loss'] = dyn_loss.mean()
 
                 kvs['loss_ml'] = loss_ml.mean()
                 kvs['loss_total'] = loss_total.mean()
@@ -252,7 +256,7 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
     n = 32
     x_start, x_end, x_plan = np.tile(x_start, (n, 1, 1, 1)), np.tile(x_end, (n, 1, 1, 1)), np.tile(x_plan, (n, 1, 1, 1))
 
-    if FLAGS.no_cond:
+    if not FLAGS.cond:
         x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan})[0]
     else:
         ACTION_PLAN = target_vars['ACTION_PLAN']
@@ -288,7 +292,7 @@ def get_avg_step_num(target_vars, sess):
     step_num = []
     n_exp = FLAGS.n_benchmark_exp
     plan_steps = FLAGS.plan_steps
-    no_cond = 'True' if FLAGS.no_cond else 'False'
+    no_cond = 'False' if FLAGS.cond else 'True'
     start_arr = [FLAGS.start1, FLAGS.start2]
     end_arr = [FLAGS.end1, FLAGS.end2]
 
@@ -302,12 +306,12 @@ def get_avg_step_num(target_vars, sess):
         x_end = np.array(end_arr)[None, None, None, :]
         x_plan = np.random.uniform(-1, 1, (1, plan_steps, 1, 2))
 
-        if FLAGS.no_cond:
-            x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan})[0]
-        else:
+        if FLAGS.cond:
             ACTION_PLAN = target_vars['ACTION_PLAN']
             actions = np.random.uniform(-0.05, 0.05, (1, plan_steps + 1, 2))
             x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan, ACTION_PLAN: actions})[0]
+        else:
+            x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan})[0]
 
         x, y = zip(*list(x_joint.squeeze()))
         plt.clf()
@@ -342,7 +346,7 @@ def get_avg_step_num(target_vars, sess):
     timestamp = str(datetime.datetime.now())
     save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}.png'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
                                                                        FLAGS.resume_iter, timestamp))
-    if FLAGS.no_cond:
+    if not FLAGS.cond:
         plt.title("action unconditional")
     else:
         plt.title("aciton conditional")
@@ -484,6 +488,10 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, LR, optimizer):
     energy_negs = [energy_noise]
     loss_energys = []
 
+    if FLAGS.inverse_dynamics:
+        dyn_model = TrajInverseDynamics()
+        weights = dyn_model.construct_weights(scope="inverse_dynamics", weights=weights)
+
     steps = tf.constant(0)
     c = lambda i, x: tf.less(i, FLAGS.num_steps)
 
@@ -562,6 +570,14 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, LR, optimizer):
     loss_total = loss_total + \
         FLAGS.l2_coeff * (tf.reduce_mean(tf.square(energy_pos)) + tf.reduce_mean(tf.square((energy_neg))))
 
+    if FLAGS.inverse_dynamics:
+        output_action = dyn_model.forward(X, weights)
+        dyn_loss = tf.reduce_mean(tf.square(output_action - ACTION_LABEL))
+        loss_total = loss_total + dyn_loss
+        target_vars['dyn_loss'] = dyn_loss
+    else:
+        target_vars['dyn_loss'] = tf.zeros(1)
+
     if FLAGS.train:
         print("Started gradient computation...")
         gvs = optimizer.compute_gradients(loss_total)
@@ -609,15 +625,13 @@ def main():
         model = TrajNetLatentFC(dim_input=FLAGS.total_frame)
         X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
         X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
+
         ACTION_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
         ACTION_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps+1, 2), dtype=tf.float32)
 
         X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
         X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
         X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
-
-    if FLAGS.no_cond:
-        ACTION_LABEL = None
 
     weights = model.construct_weights(action_size=FLAGS.action_dim)
     LR = tf.placeholder(tf.float32, [])
@@ -626,7 +640,7 @@ def main():
     if FLAGS.train:
         target_vars = construct_model(model, weights, X_NOISE, X, ACTION_LABEL, LR, optimizer)
     else:
-        if FLAGS.no_cond:
+        if not FLAGS.cond:
             target_vars = construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL)
         else:
             target_vars = construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN)
