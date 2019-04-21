@@ -7,24 +7,20 @@ A generic file to
 import datetime
 import os
 import os.path as osp
-import random
 
 import matplotlib as mpl
 import tensorflow as tf
 from baselines.logger import TensorBoardOutputFormat
 from tensorflow.python.platform import flags
 
-from traj_model import TrajNetLatentFC, TrajInverseDynamics
+from traj_model import TrajInverseDynamics, TrajNetLatentFC
 
 mpl.use('Agg')
 import matplotlib.pyplot as plt
-from tensorflow.core.util import event_pb2
 import torch
 import numpy as np
-from itertools import product
 from custom_adam import AdamOptimizer
 # from render_utils import render_reach
-from utils import ReplayBuffer
 import seaborn as sns
 
 from envs import Point, Maze
@@ -176,7 +172,7 @@ def get_avg_step_num(target_vars, sess, env):
 		plt.plot(traj[:, 0], traj[:, 1])
 		lengths.append(traj.shape[0])
 
-	average_length = sum(lengths)/ len(lengths)
+	average_length = sum(lengths) / len(lengths)
 
 	imgdir = FLAGS.imgdir
 	if not osp.exists(imgdir):
@@ -265,7 +261,6 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
 	actions = idyn_model.forward(x_joint[:, 0:2], weights)
 	target_vars = {}
 
-
 	target_vars['actions'] = actions
 	target_vars['x_joint'] = x_joint
 	target_vars['X_START'] = X_START
@@ -348,7 +343,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, LR, optimizer):
 			x_noise = tf.random_normal(x_mod_neg_shape, mean=0.0, stddev=0.05)
 			x_mod_stack = x_mod_neg = x_mod_neg + x_noise
 			x_mod_neg = tf.reshape(x_mod_neg, (
-			x_mod_neg_shape[0] * x_mod_neg_shape[1], x_mod_neg_shape[2], x_mod_neg_shape[3], x_mod_neg_shape[4]))
+				x_mod_neg_shape[0] * x_mod_neg_shape[1], x_mod_neg_shape[2], x_mod_neg_shape[3], x_mod_neg_shape[4]))
 
 			if ACTION_LABEL is not None:
 				action_label_tile = tf.reshape(tf.tile(tf.expand_dims(ACTION_LABEL, dim=1), (1, FLAGS.noise_sim, 1)),
@@ -471,7 +466,6 @@ def main():
 		X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
 		X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
 
-
 	if not FLAGS.cond:
 		ACTION_LABEL = None
 
@@ -505,7 +499,6 @@ def main():
 		raise KeyError
 
 	get_avg_step_num(target_vars, sess, env)
-
 
 
 if __name__ == "__main__":
