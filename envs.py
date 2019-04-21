@@ -5,10 +5,11 @@ from gen_data import is_maze_valid
 
 
 class Point(gym.Env):
-	def __init__(self, start=[0.0, 0.0], end=[0.5, 0.5], eps=0.01):
+	def __init__(self, start=[0.0, 0.0], end=[0.5, 0.5], eps=0.01, obstacle=None):
 		self.start = np.array(start)
 		self.end = np.array(end)
 		self.current = np.array(start)
+		self.obstacle = obstacle  # obstacle should be a size 4 array specifying top left and bottom right
 
 		self.eps = eps
 
@@ -16,11 +17,24 @@ class Point(gym.Env):
 		self.current = self.start
 		return self.current
 
+	def is_step_valid(self, pos):
+		top, left, bottom, right = self.obstacle
+		if left <= pos[0] <= right and bottom <= pos[1] <= top:
+			return False
+		else:
+			return True
+
+
 	def step(self, action):
 		reward = 0
 		info = {}
 
-		self.current = self.current + action
+		temp = self.current + action
+		if self.is_step_valid(temp):
+			self.current = temp
+		else:
+			pass
+
 		self.current = np.clip(self.current, -1, 1)
 		observation = self.current
 
