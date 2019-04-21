@@ -152,6 +152,7 @@ def get_avg_step_num(target_vars, sess, env):
 
 			obs, _, done, _ = env.step(output_actions.squeeze()[0])
 			print("obs", obs)
+			print("actions", output_actions)
 			points.append(output_actions)
 
 			ts = str(datetime.datetime.now())
