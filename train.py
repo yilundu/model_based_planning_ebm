@@ -164,11 +164,12 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
     lr = target_vars['lr']
     ACTION_LABEL = target_vars['ACTION_LABEL']
     dyn_loss = target_vars['dyn_loss']
+    dyn_dist = target_vars['dyn_dist']
 
     gvs_dict = dict(gvs)
 
     # remove gradient logging since it is slow
-    log_output = [train_op, dyn_loss, energy_pos, energy_neg, loss_energy, loss_ml, loss_total, x_grad, x_off, x_mod,
+    log_output = [train_op, dyn_loss, dyn_dist, energy_pos, energy_neg, loss_energy, loss_ml, loss_total, x_grad, x_off, x_mod,
                   *gvs_dict.keys()]
     output = [train_op, x_mod]
 
@@ -195,7 +196,7 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
 
             feed_dict = {X: label_i, X_NOISE: data_corrupt, lr: FLAGS.lr}
 
-            feed_dict[ACTION_LABEL] = actions[perm_idx[i:i+FLAGS.batch_size], j-FLAGS.total_frame]
+            feed_dict[ACTION_LABEL] = actions[perm_idx[i:i+FLAGS.batch_size], j-FLAGS.total_frame+1]
 
             if len(replay_buffer) > FLAGS.batch_size:
                 replay_batch = replay_buffer.sample(FLAGS.batch_size)
@@ -204,7 +205,7 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
                 data_corrupt[replay_mask] = replay_batch[replay_mask]
 
             if itr % FLAGS.log_interval == 0:
-                _, dyn_loss, e_pos, e_neg, loss_e, loss_ml, loss_total, x_grad, x_off, x_mod, *grads = sess.run(
+                _, dyn_loss, dyn_dist, e_pos, e_neg, loss_e, loss_ml, loss_total, x_grad, x_off, x_mod, *grads = sess.run(
                     log_output, feed_dict)
 
                 kvs = {}
@@ -213,6 +214,7 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
                 kvs['e_neg'] = e_neg.mean()
                 kvs['loss_e'] = loss_e.mean()
                 kvs['dyn_loss'] = dyn_loss.mean()
+                kvs['dyn_dist'] = dyn_dist.mean()
 
                 kvs['loss_ml'] = loss_ml.mean()
                 kvs['loss_total'] = loss_total.mean()
@@ -249,8 +251,8 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
     X_PLAN = target_vars['X_PLAN']
     x_joint = target_vars['x_joint']
 
-    x_start = np.array([0., 0.])[None, None, None, :]
-    x_end = np.array([0.5, 0.5])[None, None, None, :]
+    x_start = np.array([-0.8, -0.8])[None, None, None, :]
+    x_end = np.array([0.8, 0.8])[None, None, None, :]
     x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
 
     n = 32
@@ -573,10 +575,16 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, LR, optimizer):
     if FLAGS.inverse_dynamics:
         output_action = dyn_model.forward(X, weights)
         dyn_loss = tf.reduce_mean(tf.square(output_action - ACTION_LABEL))
-        loss_total = loss_total + dyn_loss
+        dyn_dist = tf.reduce_mean(tf.abs(output_action - ACTION_LABEL))
         target_vars['dyn_loss'] = dyn_loss
+        target_vars['dyn_dist'] = dyn_dist
+
+        dyn_optimizer = AdamOptimizer(1e-3)
+        gvs = dyn_optimizer.compute_gradients(dyn_loss)
+        dyn_train_op = dyn_optimizer.apply_gradients(gvs)
     else:
         target_vars['dyn_loss'] = tf.zeros(1)
+        target_vars['dyn_dist'] = tf.zeros(1)
 
     if FLAGS.train:
         print("Started gradient computation...")
@@ -591,6 +599,10 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, LR, optimizer):
         capped_gvs = [(filter_grad(grad, var), var) for grad, var in gvs]
         gvs = capped_gvs
         train_op = optimizer.apply_gradients(gvs)
+
+        if FLAGS.inverse_dynamics:
+            train_op = tf.group(train_op, dyn_train_op)
+
         target_vars['train_op'] = train_op
 
     print("Finished applying gradients.")
