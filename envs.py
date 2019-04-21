@@ -3,6 +3,7 @@ import numpy as np
 
 from gen_data import is_maze_valid
 
+
 class Point(gym.Env):
 	def __init__(self, start=[0.0, 0.0], end=[0.5, 0.5], eps=0.01):
 		self.start = np.array(start)
@@ -27,8 +28,6 @@ class Point(gym.Env):
 			done = True
 		else:
 			done = False
-
-
 
 		return observation, reward, done, info
 
@@ -58,12 +57,9 @@ class Maze(gym.Env):
 		self.current = np.clip(self.current, -1, 1)
 		observation = self.current
 
-		if self.end[0] - self.eps <= self.current[0] <= self.end[0] + self.eps and self.end[1] - self.eps <= \
-				self.current[0] <= self.end[1] + self.eps:
+		if np.abs(self.current - self.end).sum() < self.eps:
 			done = True
 		else:
 			done = False
-
-
 
 		return observation, reward, done, info
