@@ -172,13 +172,13 @@ class TrajInverseDynamics(object):
         with tf.variable_scope(scope):
             weights['inv_w1'] = get_weight('w1',
                                        [FLAGS.input_objects * self.dim_input * (FLAGS.total_frame),
-                                        self.dim_hidden], spec_norm=FLAGS.spec_norm)
+                                        self.dim_hidden], spec_norm=False)
             weights['inv_b1'] = tf.Variable(tf.zeros([self.dim_hidden]), name='b1')
-            weights['inv_w2'] = get_weight('w2', [self.dim_hidden, self.dim_hidden], spec_norm=FLAGS.spec_norm)
+            weights['inv_w2'] = get_weight('w2', [self.dim_hidden, self.dim_hidden], spec_norm=False)
             weights['inv_b2'] = tf.Variable(tf.zeros([self.dim_hidden]), name='b2')
-            weights['inv_w3'] = get_weight('w3', [self.dim_hidden, self.dim_hidden], spec_norm=FLAGS.spec_norm)
+            weights['inv_w3'] = get_weight('w3', [self.dim_hidden, self.dim_hidden], spec_norm=False)
             weights['inv_b3'] = tf.Variable(tf.zeros([self.dim_hidden]), name='b3')
-            weights['inv_w6'] = get_weight('w6', [self.dim_hidden, self.dim_output], spec_norm=FLAGS.spec_norm)
+            weights['inv_w6'] = get_weight('w6', [self.dim_hidden, self.dim_output], spec_norm=False)
 
         return weights
 
