@@ -54,7 +54,7 @@ def gen_maze():
     actions = np.random.uniform(-0.05, 0.05, (ob.shape[0], traj_length, 2))
 
     for i in range(1, traj_length):
-        new_ob = ob + actions[:, i-1]
+        new_ob = ob + actions[:, i]
         ob_mask = is_maze_valid(new_ob)
 
         ob[ob_mask] = new_ob[ob_mask]
