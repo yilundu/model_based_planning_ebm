@@ -121,8 +121,7 @@ def log_step_num_exp(d):
 
 def get_avg_step_num(target_vars, sess, env):
 	n_exp = FLAGS.n_benchmark_exp
-	plan_steps = FLAGS.plan_steps
-	no_cond = 'True' if not FLAGS.cond else 'False'
+	cond = 'True' if FLAGS.cond else 'False'
 	obs = env.reset()
 	collected_trajs = []
 
@@ -142,32 +141,33 @@ def get_avg_step_num(target_vars, sess, env):
 			x_plan = np.random.uniform(-1, 1, (1, plan_steps, 1, 2))
 
 			if not FLAGS.cond:
-				x_joint, output_actions = sess.run([x_joint, output_actions], {X_START: x_start, X_END: x_end,
-				                                                         X_PLAN: x_plan})
+				x_joint, output_actions = sess.run([x_joint, output_actions],
+				                                   {X_START: x_start, X_END: x_end, X_PLAN: x_plan})
 			else:
 				ACTION_PLAN = target_vars['ACTION_PLAN']
 				actions = np.random.uniform(-0.05, 0.05, (1, plan_steps + 1, 2))
-				x_joint, output_actions = sess.run([x_joint, output_actions], {X_START: x_start, X_END: x_end, X_PLAN: x_plan,
-				                                               ACTION_PLAN: actions})
+				x_joint, output_actions = sess.run([x_joint, output_actions],
+				                                   {X_START: x_start, X_END: x_end,
+				                                    X_PLAN: x_plan, ACTION_PLAN: actions})
 
 			obs, _, done, _ = env.step(output_actions.squeeze()[0])
 			print("obs", obs)
 			print("actions", output_actions)
 			points.append(output_actions)
 
-			ts = str(datetime.datetime.now())
-			d = {'ts': ts,
-			     'start': x_start,
-			     'end': x_end,
-			     'plan_steps': plan_steps,
-			     'no_cond': no_cond,
-			     'step_num': len(points),
-			     'exp': FLAGS.exp,
-			     'iter': FLAGS.resume_iter}
-			log_step_num_exp(d)
-
 			if done:
 				break
+
+		# log number of steps for each experiment
+		ts = str(datetime.datetime.now())
+		d = {'ts': ts,
+		     'start': x_start,
+		     'end': x_end,
+		     'cond': cond,
+		     'step_num': len(points),
+		     'exp': FLAGS.exp,
+		     'iter': FLAGS.resume_iter}
+		log_step_num_exp(d)
 
 		collected_trajs.append(np.array(points))
 
