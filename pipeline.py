@@ -111,7 +111,7 @@ elif FLAGS.datasource == 'maze':
 def log_step_num_exp(d):
     import csv
     with open('get_avg_step_num_log.csv', mode='a+') as csv_file:
-        fieldnames = ['ts', 'start', 'end', 'plan_steps', 'cond', 'step_num', 'exp', 'iter']
+        fieldnames = ['ts', 'start', 'actual_end', 'end', 'plan_steps', 'cond', 'step_num', 'exp', 'iter']
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writerow(d)
 
@@ -120,6 +120,7 @@ def get_avg_step_num(target_vars, sess, env):
     n_exp = FLAGS.n_benchmark_exp
     cond = 'True' if FLAGS.cond else 'False'
     obs = env.reset()
+    start = obs
     collected_trajs = []
 
     for i in range(n_exp):
@@ -166,7 +167,8 @@ def get_avg_step_num(target_vars, sess, env):
         # log number of steps for each experiment
         ts = str(datetime.datetime.now())
         d = {'ts': ts,
-             'start': x_start,
+             'start': start,
+             'actual_end': x_start,
              'end': x_end,
              'cond': cond,
              'plan_steps': FLAGS.plan_steps,
@@ -177,21 +179,26 @@ def get_avg_step_num(target_vars, sess, env):
 
         collected_trajs.append(np.array(points))
 
-    lengths = []
-    for traj in collected_trajs:
-        traj = traj.squeeze()
-        plt.plot(traj[:, 0], traj[:, 1])
-        lengths.append(traj.shape[0])
-
-    average_length = sum(lengths) / len(lengths)
-
     imgdir = FLAGS.imgdir
     if not osp.exists(imgdir):
         os.makedirs(imgdir)
-    timestamp = str(datetime.datetime.now())
-    save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}.png'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
-                                                                       FLAGS.resume_iter, timestamp))
-    plt.savefig(save_dir)
+
+    lengths = []
+    for traj in collected_trajs:
+        traj = traj.squeeze()
+
+        # save one image for each trajectory
+        timestamp = str(datetime.datetime.now())
+        save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}.png'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
+                                                                           FLAGS.resume_iter, timestamp))
+        plt.clf()
+        plt.plot(traj[:, 0], traj[:, 1])
+        plt.savefig(save_dir)
+
+        # save all length for calculation of average length
+        lengths.append(traj.shape[0])
+
+    average_length = sum(lengths) / len(lengths)
     print("average number of steps:", average_length)
 
 
