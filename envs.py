@@ -24,16 +24,18 @@ class Point(gym.Env):
 		else:
 			return True
 
-
 	def step(self, action):
 		reward = 0
 		info = {}
 
 		temp = self.current + action
-		if self.is_step_valid(temp):
-			self.current = temp
+		if self.obstacle != None:
+			if self.is_step_valid(temp):
+				self.current = temp
+			else:
+				pass
 		else:
-			pass
+			self.current = temp
 
 		self.current = np.clip(self.current, -1, 1)
 		observation = self.current
