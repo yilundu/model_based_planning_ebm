@@ -150,7 +150,7 @@ def get_avg_step_num(target_vars, sess, env):
 				x_joint, output_actions = sess.run([x_joint, output_actions], {X_START: x_start, X_END: x_end, X_PLAN: x_plan,
 				                                               ACTION_PLAN: actions})
 
-			obs, _, done, _ = env.step(output_actions.squeeze()[0])
+			obs, _, done, _ = env.step(np.clip(output_actions.squeeze()[0], -0.05, 0.05))
 			print("obs", obs)
 			points.append(output_actions)
 
@@ -172,6 +172,7 @@ def get_avg_step_num(target_vars, sess, env):
 
 	lengths = []
 	for traj in collected_trajs:
+        print(traj)
 		plt.plot(traj[:, 0], traj[:, 1])
 		lengths.append(traj.shape[0])
 

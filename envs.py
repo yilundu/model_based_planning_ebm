@@ -19,6 +19,7 @@ class Point(gym.Env):
 		reward = 0
 		info = {}
 
+        action = np.clip(action, -0.05, 0.05)
 		self.current = self.current + action
 		self.current = np.clip(self.current, -1, 1)
 		observation = self.current
@@ -49,6 +50,7 @@ class Maze(gym.Env):
 		reward = 0
 		info = {}
 
+        action = np.clip(action, -0.05, 0.05)
 		temp = self.current + action
 		if is_maze_valid(temp[None, :][0]):
 			self.current = temp
