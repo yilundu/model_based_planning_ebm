@@ -7,24 +7,20 @@ A generic file to
 import datetime
 import os
 import os.path as osp
-import random
 
 import matplotlib as mpl
 import tensorflow as tf
 from baselines.logger import TensorBoardOutputFormat
 from tensorflow.python.platform import flags
 
-from traj_model import TrajNetLatentFC, TrajInverseDynamics
+from traj_model import TrajInverseDynamics, TrajNetLatentFC
 
 mpl.use('Agg')
 import matplotlib.pyplot as plt
-from tensorflow.core.util import event_pb2
 import torch
 import numpy as np
-from itertools import product
 from custom_adam import AdamOptimizer
 # from render_utils import render_reach
-from utils import ReplayBuffer
 import seaborn as sns
 
 from envs import Point, Maze
@@ -121,8 +117,7 @@ def log_step_num_exp(d):
 
 def get_avg_step_num(target_vars, sess, env):
 	n_exp = FLAGS.n_benchmark_exp
-	plan_steps = FLAGS.plan_steps
-	no_cond = 'True' if not FLAGS.cond else 'False'
+	cond = 'True' if FLAGS.cond else 'False'
 	obs = env.reset()
 	collected_trajs = []
 
@@ -139,34 +134,38 @@ def get_avg_step_num(target_vars, sess, env):
 
 			x_start = current_point[None, None, None, :]
 			x_end = end_point[None, None, None, :]
-			x_plan = np.random.uniform(-1, 1, (1, plan_steps, 1, 2))
+			x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
 
 			if not FLAGS.cond:
-				x_joint, output_actions = sess.run([x_joint, output_actions], {X_START: x_start, X_END: x_end,
-				                                                         X_PLAN: x_plan})
+				x_joint, output_actions = sess.run([x_joint, output_actions],
+				                                   {X_START: x_start, X_END: x_end, X_PLAN: x_plan})
 			else:
 				ACTION_PLAN = target_vars['ACTION_PLAN']
-				actions = np.random.uniform(-0.05, 0.05, (1, plan_steps + 1, 2))
-				x_joint, output_actions = sess.run([x_joint, output_actions], {X_START: x_start, X_END: x_end, X_PLAN: x_plan,
-				                                               ACTION_PLAN: actions})
+				actions = np.random.uniform(-0.05, 0.05, (1, FLAGS.plan_steps + 1, 2))
+				x_joint, output_actions = sess.run([x_joint, output_actions],
+				                                   {X_START: x_start, X_END: x_end,
+				                                    X_PLAN: x_plan, ACTION_PLAN: actions})
 
 			obs, _, done, _ = env.step(np.clip(output_actions.squeeze()[0], -0.05, 0.05))
 			print("obs", obs)
+			print("actions", output_actions)
 			points.append(output_actions)
-
-			ts = str(datetime.datetime.now())
-			d = {'ts': ts,
-			     'start': x_start,
-			     'end': x_end,
-			     'plan_steps': plan_steps,
-			     'no_cond': no_cond,
-			     'step_num': len(points),
-			     'exp': FLAGS.exp,
-			     'iter': FLAGS.resume_iter}
-			log_step_num_exp(d)
 
 			if done:
 				break
+
+		# log number of steps for each experiment
+		ts = str(datetime.datetime.now())
+		d = {'ts': ts,
+		     'start': x_start,
+		     'end': x_end,
+		     'cond': cond,
+		     'num_steps': FLAGS.num_steps,
+		     'plan_steps': FLAGS.plan_steps,
+		     'step_num': len(points),
+		     'exp': FLAGS.exp,
+		     'iter': FLAGS.resume_iter}
+		log_step_num_exp(d)
 
 		collected_trajs.append(np.array(points))
 
@@ -176,7 +175,7 @@ def get_avg_step_num(target_vars, sess, env):
 		plt.plot(traj[:, 0], traj[:, 1])
 		lengths.append(traj.shape[0])
 
-	average_length = sum(lengths)/ len(lengths)
+	average_length = sum(lengths) / len(lengths)
 
 	imgdir = FLAGS.imgdir
 	if not osp.exists(imgdir):
@@ -265,7 +264,6 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
 	actions = idyn_model.forward(x_joint[:, 0:2], weights)
 	target_vars = {}
 
-
 	target_vars['actions'] = actions
 	target_vars['x_joint'] = x_joint
 	target_vars['X_START'] = X_START
@@ -348,7 +346,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, LR, optimizer):
 			x_noise = tf.random_normal(x_mod_neg_shape, mean=0.0, stddev=0.05)
 			x_mod_stack = x_mod_neg = x_mod_neg + x_noise
 			x_mod_neg = tf.reshape(x_mod_neg, (
-			x_mod_neg_shape[0] * x_mod_neg_shape[1], x_mod_neg_shape[2], x_mod_neg_shape[3], x_mod_neg_shape[4]))
+				x_mod_neg_shape[0] * x_mod_neg_shape[1], x_mod_neg_shape[2], x_mod_neg_shape[3], x_mod_neg_shape[4]))
 
 			if ACTION_LABEL is not None:
 				action_label_tile = tf.reshape(tf.tile(tf.expand_dims(ACTION_LABEL, dim=1), (1, FLAGS.noise_sim, 1)),
@@ -456,9 +454,6 @@ def main():
 		os.makedirs(logdir)
 	logger = TensorBoardOutputFormat(logdir)
 
-	# Only know the setting for omniglot, not sure about others
-	batch_size = FLAGS.batch_size
-
 	if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze':
 		model = TrajNetLatentFC(dim_input=FLAGS.total_frame)
 		X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim),
@@ -471,7 +466,6 @@ def main():
 		X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
 		X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
 
-
 	if not FLAGS.cond:
 		ACTION_LABEL = None
 
@@ -479,10 +473,10 @@ def main():
 	LR = tf.placeholder(tf.float32, [])
 	optimizer = AdamOptimizer(LR, beta1=0.0, beta2=0.999)
 
-	if not FLAGS.cond:
-		target_vars = construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL)
-	else:
+	if FLAGS.cond:
 		target_vars = construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN)
+	else:
+		target_vars = construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL)
 
 	sess = tf.InteractiveSession()
 	saver = loader = tf.train.Saver(max_to_keep=10, keep_checkpoint_every_n_hours=2)
@@ -490,22 +484,21 @@ def main():
 	tf.global_variables_initializer().run()
 	print("Initializing variables...")
 
-	resume_itr = 0
-
 	if FLAGS.resume_iter != -1 or not FLAGS.train:
 		model_file = osp.join(logdir, 'model_{}'.format(FLAGS.resume_iter))
-		resume_itr = FLAGS.resume_iter
 		saver.restore(sess, model_file)
 
+	start_arr = [FLAGS.start1, FLAGS.start2]
+	end_arr = [FLAGS.end1, FLAGS.end2]
+
 	if FLAGS.datasource == 'point':
-		env = Point()
+		env = Point(start_arr, end_arr)
 	elif FLAGS.datasource == 'maze':
-		env = Maze()
+		env = Maze(start_arr, end_arr)
 	else:
 		raise KeyError
 
 	get_avg_step_num(target_vars, sess, env)
-
 
 
 if __name__ == "__main__":
