@@ -139,6 +139,7 @@ def get_avg_step_num(target_vars, sess, env):
             if not FLAGS.cond:
                 x_joint, output_actions = sess.run([x_joint, output_actions],
                                                    {X_START: x_start, X_END: x_end, X_PLAN: x_plan})
+                output_actions = output_actions[None, :, :]
             else:
                 ACTION_PLAN = target_vars['ACTION_PLAN']
                 actions = np.random.uniform(-0.05, 0.05, (1, FLAGS.plan_steps + 1, 2))
@@ -146,13 +147,19 @@ def get_avg_step_num(target_vars, sess, env):
                                                    {X_START: x_start, X_END: x_end,
                                                     X_PLAN: x_plan, ACTION_PLAN: actions})
 
-            obs, _, done, _ = env.step(output_actions.squeeze())
-            print("obs", obs)
-            print("actions", output_actions)
-            print("pred_obs", x_joint[0, 1])
-            points.append(obs)
+            kill = False
 
-            if done:
+            for i in range(output_actions.shape[1]):
+                obs, _, done, _ = env.step(output_actions[0, i, :])
+                print("obs", obs)
+                print("actions", output_actions[0, i, :])
+                points.append(obs)
+
+                if done:
+                    kill = True
+                    break
+
+            if kill:
                 break
 
         # log number of steps for each experiment
@@ -260,8 +267,9 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
         return counter, x_joint
 
     steps, x_joint = tf.while_loop(c, mcmc_step, (steps, x_joint))
+    pair_states = tf.concat([x_joint[:, i:i+2] for i in range(FLAGS.plan_steps+1)], axis=0)
 
-    actions = idyn_model.forward(x_joint[:, 0:2], weights)
+    actions = idyn_model.forward(pair_states, weights)
     target_vars = {}
 
     target_vars['actions'] = actions
@@ -312,138 +320,6 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
     target_vars['X_END'] = X_END
     target_vars['X_PLAN'] = X_PLAN
     target_vars['ACTION_PLAN'] = ACTION_PLAN
-
-    return target_vars
-
-
-def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, LR, optimizer):
-    target_vars = {}
-    x_mods = []
-
-    energy_pos = model.forward(X, weights, action_label=ACTION_LABEL)
-    energy_noise = energy_start = model.forward(X_NOISE, weights, reuse=True, stop_at_grad=True,
-                                                action_label=ACTION_LABEL)
-
-    print("Building graph...")
-    x_mod = X_NOISE
-
-    x_grads = []
-    x_ees = []
-    energy_negs = [energy_noise]
-    loss_energys = []
-
-    steps = tf.constant(0)
-    c = lambda i, x: tf.less(i, FLAGS.num_steps)
-
-    def mcmc_step(counter, x_mod):
-        if FLAGS.grad_free:
-            x_mod_neg = tf.tile(tf.expand_dims(x_mod, axis=1), (1, FLAGS.noise_sim, 1, 1, 1))
-            x_mod_neg_shape = tf.shape(x_mod_neg)
-
-            # User energies to set movement speed in derivative free optimization
-            energy_noise = FLAGS.temperature * model.forward(x_mod, weights, action_label=ACTION_LABEL, reuse=True)
-            energy_noise = tf.reshape(energy_noise, (x_mod_neg_shape[0], 1, 1, 1, 1))
-            x_noise = tf.random_normal(x_mod_neg_shape, mean=0.0, stddev=0.05)
-            x_mod_stack = x_mod_neg = x_mod_neg + x_noise
-            x_mod_neg = tf.reshape(x_mod_neg, (
-                x_mod_neg_shape[0] * x_mod_neg_shape[1], x_mod_neg_shape[2], x_mod_neg_shape[3], x_mod_neg_shape[4]))
-
-            if ACTION_LABEL is not None:
-                action_label_tile = tf.reshape(tf.tile(tf.expand_dims(ACTION_LABEL, dim=1), (1, FLAGS.noise_sim, 1)),
-                                               (FLAGS.batch_size * FLAGS.noise_sim, -1))
-            else:
-                action_label_tile = None
-
-            energy_noise = -FLAGS.temperature * model.forward(x_mod_neg, weights, action_label=action_label_tile,
-                                                              reuse=True)
-            energy_noise = tf.reshape(energy_noise, (x_mod_neg_shape[0], FLAGS.noise_sim))
-            energy_wt = tf.nn.softmax(energy_noise, axis=1)
-            energy_wt = tf.reshape(energy_wt, (x_mod_neg_shape[0], FLAGS.noise_sim, 1, 1, 1))
-            loss_energy_wt = tf.reshape(energy_wt, (-1, 1))
-            loss_energy_noise = tf.reshape(energy_noise, (-1, 1))
-            x_mod = tf.reduce_sum(energy_wt * x_mod_stack, axis=1)
-            loss_energy_neg = loss_energy_noise * loss_energy_wt
-        else:
-            x_mod = x_mod + tf.random_normal(tf.shape(x_mod), mean=0.0, stddev=0.01)
-            energy_noise = model.forward(x_mod, weights, action_label=ACTION_LABEL, reuse=True, stop_at_grad=True)
-            lr = FLAGS.step_lr
-            x_grad = tf.gradients(FLAGS.temperature * energy_noise, [x_mod])[0]
-            x_mod = x_mod - lr * x_grad
-
-        x_mod = tf.clip_by_value(x_mod, -1.2, 1.2)
-
-        counter = counter + 1
-
-        return counter, x_mod
-
-    steps, x_mod = tf.while_loop(c, mcmc_step, (steps, x_mod))
-
-    target_vars['x_mod'] = x_mod
-    temp = FLAGS.temperature
-
-    loss_energy = temp * model.forward(x_mod, weights, reuse=True, action_label=ACTION_LABEL, stop_grad=True)
-    x_mod = tf.stop_gradient(x_mod)
-
-    energy_neg = model.forward(x_mod, weights, action_label=ACTION_LABEL, reuse=True)
-    x_grad = tf.gradients(FLAGS.temperature * energy_neg, [x_mod])[0]
-    x_off = tf.reduce_mean(tf.square(x_mod - X))
-
-    if FLAGS.train:
-        if FLAGS.objective == 'logsumexp':
-            pos_term = temp * energy_pos
-            energy_neg_reduced = (energy_neg - tf.reduce_min(energy_neg))
-            coeff = tf.stop_gradient(tf.exp(-temp * energy_neg_reduced))
-            norm_constant = tf.stop_gradient(tf.reduce_sum(coeff)) + 1e-4
-            pos_loss = tf.reduce_mean(temp * energy_pos)
-            neg_loss = coeff * (-1 * temp * energy_neg) / norm_constant
-            loss_ml = FLAGS.ml_coeff * (pos_loss + tf.reduce_sum(neg_loss))
-        elif FLAGS.objective == 'cd':
-            pos_loss = tf.reduce_mean(temp * energy_pos)
-            neg_loss = -tf.reduce_mean(temp * energy_neg)
-            loss_ml = FLAGS.ml_coeff * (pos_loss + tf.reduce_sum(neg_loss))
-        elif FLAGS.objective == 'softplus':
-            loss_ml = FLAGS.ml_coeff * \
-                      tf.nn.softplus(temp * (energy_pos - energy_neg))
-
-    loss_total = tf.reduce_mean(loss_ml)
-
-    if not FLAGS.zero_kl:
-        loss_total = loss_total + tf.reduce_mean(loss_energy)
-
-    loss_total = loss_total + \
-                 FLAGS.l2_coeff * (tf.reduce_mean(tf.square(energy_pos)) + tf.reduce_mean(tf.square((energy_neg))))
-
-    if FLAGS.train:
-        print("Started gradient computation...")
-        gvs = optimizer.compute_gradients(loss_total)
-        gvs = [(k, v) for (k, v) in gvs if k is not None]
-        print("Applying gradients...")
-        grads, vs = zip(*gvs)
-
-        def filter_grad(g, v):
-            return tf.clip_by_value(g, -1e5, 1e5)
-
-        capped_gvs = [(filter_grad(grad, var), var) for grad, var in gvs]
-        gvs = capped_gvs
-        train_op = optimizer.apply_gradients(gvs)
-        target_vars['train_op'] = train_op
-
-    print("Finished applying gradients.")
-    target_vars['loss_ml'] = loss_ml
-    target_vars['total_loss'] = loss_total
-    target_vars['gvs'] = gvs
-    target_vars['loss_energy'] = loss_energy
-    target_vars['weights'] = weights
-    target_vars['X'] = X
-    target_vars['X_NOISE'] = X_NOISE
-    target_vars['energy_pos'] = energy_pos
-    target_vars['energy_neg'] = energy_neg
-    target_vars['x_grad'] = x_grad
-    target_vars['x_mod'] = x_mod
-    target_vars['x_off'] = x_off
-    target_vars['temp'] = temp
-    target_vars['lr'] = LR
-    target_vars['ACTION_LABEL'] = ACTION_LABEL
 
     return target_vars
 

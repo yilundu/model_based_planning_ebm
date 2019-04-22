@@ -25,6 +25,8 @@ class Point(gym.Env):
             return True
 
     def step(self, action):
+        # Scale down action from range (-1, 1) to (-0.05, 0.05)
+        action = action / 20.
         reward = 0
         info = {}
 
@@ -63,6 +65,9 @@ class Maze(gym.Env):
         return self.current
 
     def step(self, action):
+        # Scale down action from range (-1, 1) to (-0.05, 0.05)
+        action = action / 20.
+
         reward = 0
         info = {}
 

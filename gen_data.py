@@ -16,7 +16,7 @@ def gen_simple():
     total_perb = np.cumsum(action, axis=1)
     total_traj = ob[:, None, :] + total_perb
 
-    np.savez("point.npz", obs=total_traj, action=action)
+    np.savez("point.npz", obs=total_traj, action=action*20.)
 
 def oob(x):
     return (x < -1) | (x > 1)
@@ -61,11 +61,12 @@ def gen_maze():
         obs.append(ob.copy())
 
     obs = np.stack(obs, axis=1)
-    np.savez("maze.npz", obs=obs, action=actions)
+    np.savez("maze.npz", obs=obs, action=actions*20.)
 
     plt.plot(obs[0, :, 0], obs[0, :, 1])
     plt.savefig("trajs.png")
 
 
 if __name__ == "__main__":
+    gen_simple()
     gen_maze()
