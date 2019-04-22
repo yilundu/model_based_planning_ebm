@@ -134,14 +134,14 @@ def get_avg_step_num(target_vars, sess, env):
 
 			x_start = current_point[None, None, None, :]
 			x_end = end_point[None, None, None, :]
-			x_plan = np.random.uniform(-1, 1, (1, plan_steps, 1, 2))
+			x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
 
 			if not FLAGS.cond:
 				x_joint, output_actions = sess.run([x_joint, output_actions],
 				                                   {X_START: x_start, X_END: x_end, X_PLAN: x_plan})
 			else:
 				ACTION_PLAN = target_vars['ACTION_PLAN']
-				actions = np.random.uniform(-0.05, 0.05, (1, plan_steps + 1, 2))
+				actions = np.random.uniform(-0.05, 0.05, (1, FLAGS.plan_steps + 1, 2))
 				x_joint, output_actions = sess.run([x_joint, output_actions],
 				                                   {X_START: x_start, X_END: x_end,
 				                                    X_PLAN: x_plan, ACTION_PLAN: actions})
@@ -160,6 +160,8 @@ def get_avg_step_num(target_vars, sess, env):
 		     'start': x_start,
 		     'end': x_end,
 		     'cond': cond,
+		     'num_steps': FLAGS.num_steps,
+		     'plan_steps': FLAGS.plan_steps,
 		     'step_num': len(points),
 		     'exp': FLAGS.exp,
 		     'iter': FLAGS.resume_iter}
@@ -451,9 +453,6 @@ def main():
 		os.makedirs(logdir)
 	logger = TensorBoardOutputFormat(logdir)
 
-	# Only know the setting for omniglot, not sure about others
-	batch_size = FLAGS.batch_size
-
 	if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze':
 		model = TrajNetLatentFC(dim_input=FLAGS.total_frame)
 		X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim),
@@ -473,10 +472,10 @@ def main():
 	LR = tf.placeholder(tf.float32, [])
 	optimizer = AdamOptimizer(LR, beta1=0.0, beta2=0.999)
 
-	if not FLAGS.cond:
-		target_vars = construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL)
-	else:
+	if FLAGS.cond:
 		target_vars = construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN)
+	else:
+		target_vars = construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL)
 
 	sess = tf.InteractiveSession()
 	saver = loader = tf.train.Saver(max_to_keep=10, keep_checkpoint_every_n_hours=2)
@@ -484,17 +483,17 @@ def main():
 	tf.global_variables_initializer().run()
 	print("Initializing variables...")
 
-	resume_itr = 0
-
 	if FLAGS.resume_iter != -1 or not FLAGS.train:
 		model_file = osp.join(logdir, 'model_{}'.format(FLAGS.resume_iter))
-		resume_itr = FLAGS.resume_iter
 		saver.restore(sess, model_file)
 
+	start_arr = [FLAGS.start1, FLAGS.start2]
+	end_arr = [FLAGS.end1, FLAGS.end2]
+
 	if FLAGS.datasource == 'point':
-		env = Point()
+		env = Point(start_arr, end_arr)
 	elif FLAGS.datasource == 'maze':
-		env = Maze()
+		env = Maze(start_arr, end_arr)
 	else:
 		raise KeyError
 
