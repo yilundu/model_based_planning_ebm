@@ -100,406 +100,407 @@ FLAGS.batch_size *= FLAGS.num_gpus
 # set_seed(FLAGS.seed)
 
 if FLAGS.datasource == 'point':
-	FLAGS.latent_dim = 2
-	FLAGS.action_dim = 2
+    FLAGS.latent_dim = 2
+    FLAGS.action_dim = 2
 elif FLAGS.datasource == 'maze':
-	FLAGS.latent_dim = 2
-	FLAGS.action_dim = 2
+    FLAGS.latent_dim = 2
+    FLAGS.action_dim = 2
 
 
 def log_step_num_exp(d):
-	import csv
-	with open('get_avg_step_num_log.csv', mode='a+') as csv_file:
-		fieldnames = ['ts', 'start', 'end', 'plan_steps', 'no_cond', 'step_num', 'exp', 'iter']
-		writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-		writer.writerow(d)
+    import csv
+    with open('get_avg_step_num_log.csv', mode='a+') as csv_file:
+        fieldnames = ['ts', 'start', 'end', 'plan_steps', 'no_cond', 'step_num', 'exp', 'iter']
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writerow(d)
 
 
 def get_avg_step_num(target_vars, sess, env):
-	n_exp = FLAGS.n_benchmark_exp
-	cond = 'True' if FLAGS.cond else 'False'
-	obs = env.reset()
-	collected_trajs = []
+    n_exp = FLAGS.n_benchmark_exp
+    cond = 'True' if FLAGS.cond else 'False'
+    obs = env.reset()
+    collected_trajs = []
 
-	for i in range(n_exp):
-		points = []
-		while True:
-			current_point = obs
-			end_point = env.end
-			X_START = target_vars['X_START']
-			X_END = target_vars['X_END']
-			X_PLAN = target_vars['X_PLAN']
-			x_joint = target_vars['x_joint']
-			output_actions = target_vars['actions']
+    for i in range(n_exp):
+        points = []
+        while True:
+            current_point = obs
+            end_point = env.end
+            X_START = target_vars['X_START']
+            X_END = target_vars['X_END']
+            X_PLAN = target_vars['X_PLAN']
+            x_joint = target_vars['x_joint']
+            output_actions = target_vars['actions']
 
-			x_start = current_point[None, None, None, :]
-			x_end = end_point[None, None, None, :]
-			x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
+            x_start = current_point[None, None, None, :]
+            x_end = end_point[None, None, None, :]
+            x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
 
-			if not FLAGS.cond:
-				x_joint, output_actions = sess.run([x_joint, output_actions],
-				                                   {X_START: x_start, X_END: x_end, X_PLAN: x_plan})
-			else:
-				ACTION_PLAN = target_vars['ACTION_PLAN']
-				actions = np.random.uniform(-0.05, 0.05, (1, FLAGS.plan_steps + 1, 2))
-				x_joint, output_actions = sess.run([x_joint, output_actions],
-				                                   {X_START: x_start, X_END: x_end,
-				                                    X_PLAN: x_plan, ACTION_PLAN: actions})
+            if not FLAGS.cond:
+                x_joint, output_actions = sess.run([x_joint, output_actions],
+                                                   {X_START: x_start, X_END: x_end, X_PLAN: x_plan})
+            else:
+                ACTION_PLAN = target_vars['ACTION_PLAN']
+                actions = np.random.uniform(-0.05, 0.05, (1, FLAGS.plan_steps + 1, 2))
+                x_joint, output_actions = sess.run([x_joint, output_actions],
+                                                   {X_START: x_start, X_END: x_end,
+                                                    X_PLAN: x_plan, ACTION_PLAN: actions})
 
-			obs, _, done, _ = env.step(np.clip(output_actions.squeeze()[0], -0.05, 0.05))
-			print("obs", obs)
-			print("actions", output_actions)
-			points.append(output_actions)
+            print(output_actions)
+            obs, _, done, _ = env.step(output_actions.squeeze()[0])
+            print("obs", obs)
+            print("actions", output_actions)
+            points.append(output_actions)
 
-			if done:
-				break
+            if done:
+                break
 
-		# log number of steps for each experiment
-		ts = str(datetime.datetime.now())
-		d = {'ts': ts,
-		     'start': x_start,
-		     'end': x_end,
-		     'cond': cond,
-		     'num_steps': FLAGS.num_steps,
-		     'plan_steps': FLAGS.plan_steps,
-		     'step_num': len(points),
-		     'exp': FLAGS.exp,
-		     'iter': FLAGS.resume_iter}
-		log_step_num_exp(d)
+        # log number of steps for each experiment
+        ts = str(datetime.datetime.now())
+        d = {'ts': ts,
+             'start': x_start,
+             'end': x_end,
+             'cond': cond,
+             'num_steps': FLAGS.num_steps,
+             'plan_steps': FLAGS.plan_steps,
+             'step_num': len(points),
+             'exp': FLAGS.exp,
+             'iter': FLAGS.resume_iter}
+        log_step_num_exp(d)
 
-		collected_trajs.append(np.array(points))
+        collected_trajs.append(np.array(points))
 
-	lengths = []
-	for traj in collected_trajs:
+    lengths = []
+    for traj in collected_trajs:
         print(traj)
-		plt.plot(traj[:, 0], traj[:, 1])
-		lengths.append(traj.shape[0])
+        plt.plot(traj[:, 0], traj[:, 1])
+        lengths.append(traj.shape[0])
 
-	average_length = sum(lengths) / len(lengths)
+    average_length = sum(lengths) / len(lengths)
 
-	imgdir = FLAGS.imgdir
-	if not osp.exists(imgdir):
-		os.makedirs(imgdir)
-	timestamp = str(datetime.datetime.now())
-	save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}.png'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
-	                                                                   FLAGS.resume_iter, timestamp))
-	plt.savefig(save_dir)
-	print("average number of steps:", average_length)
+    imgdir = FLAGS.imgdir
+    if not osp.exists(imgdir):
+        os.makedirs(imgdir)
+    timestamp = str(datetime.datetime.now())
+    save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}.png'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
+                                                                       FLAGS.resume_iter, timestamp))
+    plt.savefig(save_dir)
+    print("average number of steps:", average_length)
 
 
 def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL):
-	x_joint = tf.concat([X_START, X_PLAN, X_END], axis=1)
-	steps = tf.constant(0)
-	c = lambda i, x: tf.less(i, FLAGS.num_steps)
+    x_joint = tf.concat([X_START, X_PLAN, X_END], axis=1)
+    steps = tf.constant(0)
+    c = lambda i, x: tf.less(i, FLAGS.num_steps)
 
-	idyn_model = TrajInverseDynamics()
-	weights = idyn_model.construct_weights(scope="inverse_dynamics", weights=weights)
+    idyn_model = TrajInverseDynamics()
+    weights = idyn_model.construct_weights(scope="inverse_dynamics", weights=weights)
 
-	def mcmc_step(counter, x_joint):
-		cum_energies = 0
+    def mcmc_step(counter, x_joint):
+        cum_energies = 0
 
-		# Code for doing joint sampling over all possible states
-		# for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
-		#     cum_energy = model.forward(x_joint[:, i:i+FLAGS.total_frame], weights, action_label=ACTION_LABEL)
-		#     cum_energies = cum_energies + cum_energy
+        # Code for doing joint sampling over all possible states
+        # for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
+        #     cum_energy = model.forward(x_joint[:, i:i+FLAGS.total_frame], weights, action_label=ACTION_LABEL)
+        #     cum_energies = cum_energies + cum_energy
 
-		# cum_energies = tf.Print(cum_energies, [cum_energies])
-		# x_grad = tf.gradients(cum_energies, [x_joint])[0]
-		# x_joint = x_joint - FLAGS.step_lr * x_grad
+        # cum_energies = tf.Print(cum_energies, [cum_energies])
+        # x_grad = tf.gradients(cum_energies, [x_joint])[0]
+        # x_joint = x_joint - FLAGS.step_lr * x_grad
 
-		# Code for doing sampling for beginning to end and then from end to beginning
-		cum_energies = []
+        # Code for doing sampling for beginning to end and then from end to beginning
+        cum_energies = []
 
-		if FLAGS.seq_plan:
-			for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
-				x_temp = x_joint[:, i:i + FLAGS.total_frame]
-				x_temp = x_temp + tf.random_normal(tf.shape(x_temp), mean=0.0, stddev=0.1)
-				cum_energy = model.forward(x_temp, weights, action_label=ACTION_LABEL)
-				x_grad = tf.gradients(cum_energy, [x_temp])[0]
-				x_new = x_joint[:, i:i + FLAGS.total_frame] - FLAGS.step_lr * tf.cast(counter,
-				                                                                      tf.float32) / FLAGS.num_steps * x_grad
+        if FLAGS.seq_plan:
+            for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
+                x_temp = x_joint[:, i:i + FLAGS.total_frame]
+                x_temp = x_temp + tf.random_normal(tf.shape(x_temp), mean=0.0, stddev=0.1)
+                cum_energy = model.forward(x_temp, weights, action_label=ACTION_LABEL)
+                x_grad = tf.gradients(cum_energy, [x_temp])[0]
+                x_new = x_joint[:, i:i + FLAGS.total_frame] - FLAGS.step_lr * tf.cast(counter,
+                                                                                      tf.float32) / FLAGS.num_steps * x_grad
 
-				x_joint = tf.concat([x_joint[:, :i], x_new, x_joint[:, i + FLAGS.total_frame:]], axis=1)
+                x_joint = tf.concat([x_joint[:, :i], x_new, x_joint[:, i + FLAGS.total_frame:]], axis=1)
 
-				cum_energies.append(cum_energy)
+                cum_energies.append(cum_energy)
 
-			x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
+            x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
 
-			for i in range(FLAGS.plan_steps - FLAGS.total_frame + 2, -1):
-				x_temp = x_joint[:, i:i + FLAGS.total_frame]
-				x_temp = x_temp + tf.random_normal(tf.shape(x_temp), mean=0.0, stddev=0.1)
-				cum_energy = model.forward(x_temp, weights, action_label=ACTION_LABEL)
-				x_grad = tf.gradients(cum_energy, [x_temp])[0]
+            for i in range(FLAGS.plan_steps - FLAGS.total_frame + 2, -1):
+                x_temp = x_joint[:, i:i + FLAGS.total_frame]
+                x_temp = x_temp + tf.random_normal(tf.shape(x_temp), mean=0.0, stddev=0.1)
+                cum_energy = model.forward(x_temp, weights, action_label=ACTION_LABEL)
+                x_grad = tf.gradients(cum_energy, [x_temp])[0]
 
-				x_new = x_joint[:, i:i + FLAGS.total_frame] - FLAGS.step_lr * tf.cast(counter,
-				                                                                      tf.float32) / FLAGS.num_steps * x_grad
-				x_joint = tf.concat([x_joint[:, :i], x_new, x_joint[:, i + FLAGS.total_frame:]], axis=1)
+                x_new = x_joint[:, i:i + FLAGS.total_frame] - FLAGS.step_lr * tf.cast(counter,
+                                                                                      tf.float32) / FLAGS.num_steps * x_grad
+                x_joint = tf.concat([x_joint[:, :i], x_new, x_joint[:, i + FLAGS.total_frame:]], axis=1)
 
-				cum_energies.append(cum_energy)
+                cum_energies.append(cum_energy)
 
-			cum_energies = tf.concat(cum_energies, axis=1)
-		else:
-			x_joint = x_joint + tf.random_normal(tf.shape(x_joint), mean=0.0, stddev=0.01)
-			for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
-				x_temp = x_joint[:, i:i + FLAGS.total_frame]
-				cum_energy = model.forward(x_temp, weights, action_label=ACTION_LABEL)
-				cum_energies.append(cum_energy)
+            cum_energies = tf.concat(cum_energies, axis=1)
+        else:
+            x_joint = x_joint + tf.random_normal(tf.shape(x_joint), mean=0.0, stddev=0.01)
+            for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
+                x_temp = x_joint[:, i:i + FLAGS.total_frame]
+                cum_energy = model.forward(x_temp, weights, action_label=ACTION_LABEL)
+                cum_energies.append(cum_energy)
 
-			cum_energies = tf.reduce_sum(tf.concat(cum_energies, axis=1), axis=1)
-			x_grad = tf.gradients(cum_energies, [x_joint])[0]
-			x_joint = x_joint - FLAGS.step_lr * tf.cast(counter, tf.float32) / FLAGS.num_steps * x_grad
+            cum_energies = tf.reduce_sum(tf.concat(cum_energies, axis=1), axis=1)
+            x_grad = tf.gradients(cum_energies, [x_joint])[0]
+            x_joint = x_joint - FLAGS.step_lr * tf.cast(counter, tf.float32) / FLAGS.num_steps * x_grad
 
-		# Reset the start and end states to be previous values
-		x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
-		counter = counter + 1
+        # Reset the start and end states to be previous values
+        x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
+        counter = counter + 1
 
-		# counter = tf.Print(counter,
-		#                    [tf.reduce_mean(cum_energies), tf.reduce_max(cum_energies), tf.reduce_min(cum_energies)])
-		x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
+        # counter = tf.Print(counter,
+        #                    [tf.reduce_mean(cum_energies), tf.reduce_max(cum_energies), tf.reduce_min(cum_energies)])
+        x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
 
-		return counter, x_joint
+        return counter, x_joint
 
-	steps, x_joint = tf.while_loop(c, mcmc_step, (steps, x_joint))
+    steps, x_joint = tf.while_loop(c, mcmc_step, (steps, x_joint))
 
-	actions = idyn_model.forward(x_joint[:, 0:2], weights)
-	target_vars = {}
+    actions = idyn_model.forward(x_joint[:, 0:2], weights)
+    target_vars = {}
 
-	target_vars['actions'] = actions
-	target_vars['x_joint'] = x_joint
-	target_vars['X_START'] = X_START
-	target_vars['X_END'] = X_END
-	target_vars['ACTION_LABEL'] = ACTION_LABEL
-	target_vars['X_PLAN'] = X_PLAN
+    target_vars['actions'] = actions
+    target_vars['x_joint'] = x_joint
+    target_vars['X_START'] = X_START
+    target_vars['X_END'] = X_END
+    target_vars['ACTION_LABEL'] = ACTION_LABEL
+    target_vars['X_PLAN'] = X_PLAN
 
-	return target_vars
+    return target_vars
 
 
 def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN):
-	actions = ACTION_PLAN
-	x_joint = tf.concat([X_START, X_PLAN, X_END], axis=1)
-	steps = tf.constant(0)
-	c = lambda i, x, y: tf.less(i, FLAGS.num_steps)
+    actions = ACTION_PLAN
+    x_joint = tf.concat([X_START, X_PLAN, X_END], axis=1)
+    steps = tf.constant(0)
+    c = lambda i, x, y: tf.less(i, FLAGS.num_steps)
 
-	def mcmc_step(counter, x_joint, actions):
-		actions = actions + tf.random_normal(tf.shape(actions), mean=0.0, stddev=0.01)
-		x_joint = x_joint + tf.random_normal(tf.shape(x_joint), mean=0.0, stddev=0.01)
-		cum_energies = 0
-		for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
-			print(x_joint[:, i:i + FLAGS.total_frame].get_shape())
-			cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=actions[:, i])
-			cum_energies = cum_energies + cum_energy
+    def mcmc_step(counter, x_joint, actions):
+        actions = actions + tf.random_normal(tf.shape(actions), mean=0.0, stddev=0.01)
+        x_joint = x_joint + tf.random_normal(tf.shape(x_joint), mean=0.0, stddev=0.01)
+        cum_energies = 0
+        for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
+            print(x_joint[:, i:i + FLAGS.total_frame].get_shape())
+            cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=actions[:, i])
+            cum_energies = cum_energies + cum_energy
 
-		# cum_energies = tf.Print(cum_energies, [cum_energies])
+        # cum_energies = tf.Print(cum_energies, [cum_energies])
 
-		x_grad = tf.gradients(cum_energies, [x_joint])[0]
-		x_joint = x_joint - FLAGS.step_lr * x_grad
-		x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
-		x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
+        x_grad = tf.gradients(cum_energies, [x_joint])[0]
+        x_joint = x_joint - FLAGS.step_lr * x_grad
+        x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
+        x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
 
-		action_grad = tf.gradients(cum_energies, [actions])[0]
-		actions = actions - FLAGS.step_lr * action_grad
-		actions = tf.clip_by_value(actions, -0.05, 0.05)
+        action_grad = tf.gradients(cum_energies, [actions])[0]
+        actions = actions - FLAGS.step_lr * action_grad
+        actions = tf.clip_by_value(actions, -0.05, 0.05)
 
-		counter = counter + 1
+        counter = counter + 1
 
-		return counter, x_joint, actions
+        return counter, x_joint, actions
 
-	steps, x_joint, actions = tf.while_loop(c, mcmc_step, (steps, x_joint, actions))
-	target_vars = {}
-	target_vars['x_joint'] = x_joint
-	target_vars['actions'] = actions
-	target_vars['X_START'] = X_START
-	target_vars['X_END'] = X_END
-	target_vars['X_PLAN'] = X_PLAN
-	target_vars['ACTION_PLAN'] = ACTION_PLAN
+    steps, x_joint, actions = tf.while_loop(c, mcmc_step, (steps, x_joint, actions))
+    target_vars = {}
+    target_vars['x_joint'] = x_joint
+    target_vars['actions'] = actions
+    target_vars['X_START'] = X_START
+    target_vars['X_END'] = X_END
+    target_vars['X_PLAN'] = X_PLAN
+    target_vars['ACTION_PLAN'] = ACTION_PLAN
 
-	return target_vars
+    return target_vars
 
 
 def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, LR, optimizer):
-	target_vars = {}
-	x_mods = []
+    target_vars = {}
+    x_mods = []
 
-	energy_pos = model.forward(X, weights, action_label=ACTION_LABEL)
-	energy_noise = energy_start = model.forward(X_NOISE, weights, reuse=True, stop_at_grad=True,
-	                                            action_label=ACTION_LABEL)
+    energy_pos = model.forward(X, weights, action_label=ACTION_LABEL)
+    energy_noise = energy_start = model.forward(X_NOISE, weights, reuse=True, stop_at_grad=True,
+                                                action_label=ACTION_LABEL)
 
-	print("Building graph...")
-	x_mod = X_NOISE
+    print("Building graph...")
+    x_mod = X_NOISE
 
-	x_grads = []
-	x_ees = []
-	energy_negs = [energy_noise]
-	loss_energys = []
+    x_grads = []
+    x_ees = []
+    energy_negs = [energy_noise]
+    loss_energys = []
 
-	steps = tf.constant(0)
-	c = lambda i, x: tf.less(i, FLAGS.num_steps)
+    steps = tf.constant(0)
+    c = lambda i, x: tf.less(i, FLAGS.num_steps)
 
-	def mcmc_step(counter, x_mod):
-		if FLAGS.grad_free:
-			x_mod_neg = tf.tile(tf.expand_dims(x_mod, axis=1), (1, FLAGS.noise_sim, 1, 1, 1))
-			x_mod_neg_shape = tf.shape(x_mod_neg)
+    def mcmc_step(counter, x_mod):
+        if FLAGS.grad_free:
+            x_mod_neg = tf.tile(tf.expand_dims(x_mod, axis=1), (1, FLAGS.noise_sim, 1, 1, 1))
+            x_mod_neg_shape = tf.shape(x_mod_neg)
 
-			# User energies to set movement speed in derivative free optimization
-			energy_noise = FLAGS.temperature * model.forward(x_mod, weights, action_label=ACTION_LABEL, reuse=True)
-			energy_noise = tf.reshape(energy_noise, (x_mod_neg_shape[0], 1, 1, 1, 1))
-			x_noise = tf.random_normal(x_mod_neg_shape, mean=0.0, stddev=0.05)
-			x_mod_stack = x_mod_neg = x_mod_neg + x_noise
-			x_mod_neg = tf.reshape(x_mod_neg, (
-				x_mod_neg_shape[0] * x_mod_neg_shape[1], x_mod_neg_shape[2], x_mod_neg_shape[3], x_mod_neg_shape[4]))
+            # User energies to set movement speed in derivative free optimization
+            energy_noise = FLAGS.temperature * model.forward(x_mod, weights, action_label=ACTION_LABEL, reuse=True)
+            energy_noise = tf.reshape(energy_noise, (x_mod_neg_shape[0], 1, 1, 1, 1))
+            x_noise = tf.random_normal(x_mod_neg_shape, mean=0.0, stddev=0.05)
+            x_mod_stack = x_mod_neg = x_mod_neg + x_noise
+            x_mod_neg = tf.reshape(x_mod_neg, (
+                x_mod_neg_shape[0] * x_mod_neg_shape[1], x_mod_neg_shape[2], x_mod_neg_shape[3], x_mod_neg_shape[4]))
 
-			if ACTION_LABEL is not None:
-				action_label_tile = tf.reshape(tf.tile(tf.expand_dims(ACTION_LABEL, dim=1), (1, FLAGS.noise_sim, 1)),
-				                               (FLAGS.batch_size * FLAGS.noise_sim, -1))
-			else:
-				action_label_tile = None
+            if ACTION_LABEL is not None:
+                action_label_tile = tf.reshape(tf.tile(tf.expand_dims(ACTION_LABEL, dim=1), (1, FLAGS.noise_sim, 1)),
+                                               (FLAGS.batch_size * FLAGS.noise_sim, -1))
+            else:
+                action_label_tile = None
 
-			energy_noise = -FLAGS.temperature * model.forward(x_mod_neg, weights, action_label=action_label_tile,
-			                                                  reuse=True)
-			energy_noise = tf.reshape(energy_noise, (x_mod_neg_shape[0], FLAGS.noise_sim))
-			energy_wt = tf.nn.softmax(energy_noise, axis=1)
-			energy_wt = tf.reshape(energy_wt, (x_mod_neg_shape[0], FLAGS.noise_sim, 1, 1, 1))
-			loss_energy_wt = tf.reshape(energy_wt, (-1, 1))
-			loss_energy_noise = tf.reshape(energy_noise, (-1, 1))
-			x_mod = tf.reduce_sum(energy_wt * x_mod_stack, axis=1)
-			loss_energy_neg = loss_energy_noise * loss_energy_wt
-		else:
-			x_mod = x_mod + tf.random_normal(tf.shape(x_mod), mean=0.0, stddev=0.01)
-			energy_noise = model.forward(x_mod, weights, action_label=ACTION_LABEL, reuse=True, stop_at_grad=True)
-			lr = FLAGS.step_lr
-			x_grad = tf.gradients(FLAGS.temperature * energy_noise, [x_mod])[0]
-			x_mod = x_mod - lr * x_grad
+            energy_noise = -FLAGS.temperature * model.forward(x_mod_neg, weights, action_label=action_label_tile,
+                                                              reuse=True)
+            energy_noise = tf.reshape(energy_noise, (x_mod_neg_shape[0], FLAGS.noise_sim))
+            energy_wt = tf.nn.softmax(energy_noise, axis=1)
+            energy_wt = tf.reshape(energy_wt, (x_mod_neg_shape[0], FLAGS.noise_sim, 1, 1, 1))
+            loss_energy_wt = tf.reshape(energy_wt, (-1, 1))
+            loss_energy_noise = tf.reshape(energy_noise, (-1, 1))
+            x_mod = tf.reduce_sum(energy_wt * x_mod_stack, axis=1)
+            loss_energy_neg = loss_energy_noise * loss_energy_wt
+        else:
+            x_mod = x_mod + tf.random_normal(tf.shape(x_mod), mean=0.0, stddev=0.01)
+            energy_noise = model.forward(x_mod, weights, action_label=ACTION_LABEL, reuse=True, stop_at_grad=True)
+            lr = FLAGS.step_lr
+            x_grad = tf.gradients(FLAGS.temperature * energy_noise, [x_mod])[0]
+            x_mod = x_mod - lr * x_grad
 
-		x_mod = tf.clip_by_value(x_mod, -1.2, 1.2)
+        x_mod = tf.clip_by_value(x_mod, -1.2, 1.2)
 
-		counter = counter + 1
+        counter = counter + 1
 
-		return counter, x_mod
+        return counter, x_mod
 
-	steps, x_mod = tf.while_loop(c, mcmc_step, (steps, x_mod))
+    steps, x_mod = tf.while_loop(c, mcmc_step, (steps, x_mod))
 
-	target_vars['x_mod'] = x_mod
-	temp = FLAGS.temperature
+    target_vars['x_mod'] = x_mod
+    temp = FLAGS.temperature
 
-	loss_energy = temp * model.forward(x_mod, weights, reuse=True, action_label=ACTION_LABEL, stop_grad=True)
-	x_mod = tf.stop_gradient(x_mod)
+    loss_energy = temp * model.forward(x_mod, weights, reuse=True, action_label=ACTION_LABEL, stop_grad=True)
+    x_mod = tf.stop_gradient(x_mod)
 
-	energy_neg = model.forward(x_mod, weights, action_label=ACTION_LABEL, reuse=True)
-	x_grad = tf.gradients(FLAGS.temperature * energy_neg, [x_mod])[0]
-	x_off = tf.reduce_mean(tf.square(x_mod - X))
+    energy_neg = model.forward(x_mod, weights, action_label=ACTION_LABEL, reuse=True)
+    x_grad = tf.gradients(FLAGS.temperature * energy_neg, [x_mod])[0]
+    x_off = tf.reduce_mean(tf.square(x_mod - X))
 
-	if FLAGS.train:
-		if FLAGS.objective == 'logsumexp':
-			pos_term = temp * energy_pos
-			energy_neg_reduced = (energy_neg - tf.reduce_min(energy_neg))
-			coeff = tf.stop_gradient(tf.exp(-temp * energy_neg_reduced))
-			norm_constant = tf.stop_gradient(tf.reduce_sum(coeff)) + 1e-4
-			pos_loss = tf.reduce_mean(temp * energy_pos)
-			neg_loss = coeff * (-1 * temp * energy_neg) / norm_constant
-			loss_ml = FLAGS.ml_coeff * (pos_loss + tf.reduce_sum(neg_loss))
-		elif FLAGS.objective == 'cd':
-			pos_loss = tf.reduce_mean(temp * energy_pos)
-			neg_loss = -tf.reduce_mean(temp * energy_neg)
-			loss_ml = FLAGS.ml_coeff * (pos_loss + tf.reduce_sum(neg_loss))
-		elif FLAGS.objective == 'softplus':
-			loss_ml = FLAGS.ml_coeff * \
-			          tf.nn.softplus(temp * (energy_pos - energy_neg))
+    if FLAGS.train:
+        if FLAGS.objective == 'logsumexp':
+            pos_term = temp * energy_pos
+            energy_neg_reduced = (energy_neg - tf.reduce_min(energy_neg))
+            coeff = tf.stop_gradient(tf.exp(-temp * energy_neg_reduced))
+            norm_constant = tf.stop_gradient(tf.reduce_sum(coeff)) + 1e-4
+            pos_loss = tf.reduce_mean(temp * energy_pos)
+            neg_loss = coeff * (-1 * temp * energy_neg) / norm_constant
+            loss_ml = FLAGS.ml_coeff * (pos_loss + tf.reduce_sum(neg_loss))
+        elif FLAGS.objective == 'cd':
+            pos_loss = tf.reduce_mean(temp * energy_pos)
+            neg_loss = -tf.reduce_mean(temp * energy_neg)
+            loss_ml = FLAGS.ml_coeff * (pos_loss + tf.reduce_sum(neg_loss))
+        elif FLAGS.objective == 'softplus':
+            loss_ml = FLAGS.ml_coeff * \
+                      tf.nn.softplus(temp * (energy_pos - energy_neg))
 
-	loss_total = tf.reduce_mean(loss_ml)
+    loss_total = tf.reduce_mean(loss_ml)
 
-	if not FLAGS.zero_kl:
-		loss_total = loss_total + tf.reduce_mean(loss_energy)
+    if not FLAGS.zero_kl:
+        loss_total = loss_total + tf.reduce_mean(loss_energy)
 
-	loss_total = loss_total + \
-	             FLAGS.l2_coeff * (tf.reduce_mean(tf.square(energy_pos)) + tf.reduce_mean(tf.square((energy_neg))))
+    loss_total = loss_total + \
+                 FLAGS.l2_coeff * (tf.reduce_mean(tf.square(energy_pos)) + tf.reduce_mean(tf.square((energy_neg))))
 
-	if FLAGS.train:
-		print("Started gradient computation...")
-		gvs = optimizer.compute_gradients(loss_total)
-		gvs = [(k, v) for (k, v) in gvs if k is not None]
-		print("Applying gradients...")
-		grads, vs = zip(*gvs)
+    if FLAGS.train:
+        print("Started gradient computation...")
+        gvs = optimizer.compute_gradients(loss_total)
+        gvs = [(k, v) for (k, v) in gvs if k is not None]
+        print("Applying gradients...")
+        grads, vs = zip(*gvs)
 
-		def filter_grad(g, v):
-			return tf.clip_by_value(g, -1e5, 1e5)
+        def filter_grad(g, v):
+            return tf.clip_by_value(g, -1e5, 1e5)
 
-		capped_gvs = [(filter_grad(grad, var), var) for grad, var in gvs]
-		gvs = capped_gvs
-		train_op = optimizer.apply_gradients(gvs)
-		target_vars['train_op'] = train_op
+        capped_gvs = [(filter_grad(grad, var), var) for grad, var in gvs]
+        gvs = capped_gvs
+        train_op = optimizer.apply_gradients(gvs)
+        target_vars['train_op'] = train_op
 
-	print("Finished applying gradients.")
-	target_vars['loss_ml'] = loss_ml
-	target_vars['total_loss'] = loss_total
-	target_vars['gvs'] = gvs
-	target_vars['loss_energy'] = loss_energy
-	target_vars['weights'] = weights
-	target_vars['X'] = X
-	target_vars['X_NOISE'] = X_NOISE
-	target_vars['energy_pos'] = energy_pos
-	target_vars['energy_neg'] = energy_neg
-	target_vars['x_grad'] = x_grad
-	target_vars['x_mod'] = x_mod
-	target_vars['x_off'] = x_off
-	target_vars['temp'] = temp
-	target_vars['lr'] = LR
-	target_vars['ACTION_LABEL'] = ACTION_LABEL
+    print("Finished applying gradients.")
+    target_vars['loss_ml'] = loss_ml
+    target_vars['total_loss'] = loss_total
+    target_vars['gvs'] = gvs
+    target_vars['loss_energy'] = loss_energy
+    target_vars['weights'] = weights
+    target_vars['X'] = X
+    target_vars['X_NOISE'] = X_NOISE
+    target_vars['energy_pos'] = energy_pos
+    target_vars['energy_neg'] = energy_neg
+    target_vars['x_grad'] = x_grad
+    target_vars['x_mod'] = x_mod
+    target_vars['x_off'] = x_off
+    target_vars['temp'] = temp
+    target_vars['lr'] = LR
+    target_vars['ACTION_LABEL'] = ACTION_LABEL
 
-	return target_vars
+    return target_vars
 
 
 def main():
-	logdir = osp.join(FLAGS.logdir, FLAGS.exp)
-	if not osp.exists(logdir):
-		os.makedirs(logdir)
-	logger = TensorBoardOutputFormat(logdir)
+    logdir = osp.join(FLAGS.logdir, FLAGS.exp)
+    if not osp.exists(logdir):
+        os.makedirs(logdir)
+    logger = TensorBoardOutputFormat(logdir)
 
-	if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze':
-		model = TrajNetLatentFC(dim_input=FLAGS.total_frame)
-		X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim),
-		                         dtype=tf.float32)
-		X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
-		ACTION_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
-		ACTION_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps + 1, 2), dtype=tf.float32)
+    if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze':
+        model = TrajNetLatentFC(dim_input=FLAGS.total_frame)
+        X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim),
+                                 dtype=tf.float32)
+        X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
+        ACTION_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
+        ACTION_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps + 1, 2), dtype=tf.float32)
 
-		X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
-		X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
-		X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
+        X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
+        X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
+        X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
 
-	if not FLAGS.cond:
-		ACTION_LABEL = None
+    if not FLAGS.cond:
+        ACTION_LABEL = None
 
-	weights = model.construct_weights(action_size=FLAGS.action_dim)
-	LR = tf.placeholder(tf.float32, [])
-	optimizer = AdamOptimizer(LR, beta1=0.0, beta2=0.999)
+    weights = model.construct_weights(action_size=FLAGS.action_dim)
+    LR = tf.placeholder(tf.float32, [])
+    optimizer = AdamOptimizer(LR, beta1=0.0, beta2=0.999)
 
-	if FLAGS.cond:
-		target_vars = construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN)
-	else:
-		target_vars = construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL)
+    if FLAGS.cond:
+        target_vars = construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN)
+    else:
+        target_vars = construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL)
 
-	sess = tf.InteractiveSession()
-	saver = loader = tf.train.Saver(max_to_keep=10, keep_checkpoint_every_n_hours=2)
+    sess = tf.InteractiveSession()
+    saver = loader = tf.train.Saver(max_to_keep=10, keep_checkpoint_every_n_hours=2)
 
-	tf.global_variables_initializer().run()
-	print("Initializing variables...")
+    tf.global_variables_initializer().run()
+    print("Initializing variables...")
 
-	if FLAGS.resume_iter != -1 or not FLAGS.train:
-		model_file = osp.join(logdir, 'model_{}'.format(FLAGS.resume_iter))
-		saver.restore(sess, model_file)
+    if FLAGS.resume_iter != -1 or not FLAGS.train:
+        model_file = osp.join(logdir, 'model_{}'.format(FLAGS.resume_iter))
+        saver.restore(sess, model_file)
 
-	start_arr = [FLAGS.start1, FLAGS.start2]
-	end_arr = [FLAGS.end1, FLAGS.end2]
+    start_arr = [FLAGS.start1, FLAGS.start2]
+    end_arr = [FLAGS.end1, FLAGS.end2]
 
-	if FLAGS.datasource == 'point':
-		env = Point(start_arr, end_arr)
-	elif FLAGS.datasource == 'maze':
-		env = Maze(start_arr, end_arr)
-	else:
-		raise KeyError
+    if FLAGS.datasource == 'point':
+        env = Point(start_arr, end_arr)
+    elif FLAGS.datasource == 'maze':
+        env = Maze(start_arr, end_arr)
+    else:
+        raise KeyError
 
-	get_avg_step_num(target_vars, sess, env)
+    get_avg_step_num(target_vars, sess, env)
 
 
 if __name__ == "__main__":
-	main()
+    main()
