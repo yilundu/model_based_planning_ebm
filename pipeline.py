@@ -110,7 +110,7 @@ elif FLAGS.datasource == 'maze':
 def log_step_num_exp(d):
     import csv
     with open('get_avg_step_num_log.csv', mode='a+') as csv_file:
-        fieldnames = ['ts', 'start', 'end', 'plan_steps', 'no_cond', 'step_num', 'exp', 'iter']
+        fieldnames = ['ts', 'start', 'end', 'plan_steps', 'cond', 'step_num', 'exp', 'iter']
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writerow(d)
 
@@ -146,11 +146,11 @@ def get_avg_step_num(target_vars, sess, env):
                                                    {X_START: x_start, X_END: x_end,
                                                     X_PLAN: x_plan, ACTION_PLAN: actions})
 
-            print(output_actions)
-            obs, _, done, _ = env.step(output_actions.squeeze()[0])
+            obs, _, done, _ = env.step(output_actions.squeeze())
             print("obs", obs)
             print("actions", output_actions)
-            points.append(output_actions)
+            print("pred_obs", x_joint[0, 1])
+            points.append(obs)
 
             if done:
                 break
@@ -161,7 +161,6 @@ def get_avg_step_num(target_vars, sess, env):
              'start': x_start,
              'end': x_end,
              'cond': cond,
-             'num_steps': FLAGS.num_steps,
              'plan_steps': FLAGS.plan_steps,
              'step_num': len(points),
              'exp': FLAGS.exp,
@@ -172,7 +171,7 @@ def get_avg_step_num(target_vars, sess, env):
 
     lengths = []
     for traj in collected_trajs:
-        print(traj)
+        traj = traj.squeeze()
         plt.plot(traj[:, 0], traj[:, 1])
         lengths.append(traj.shape[0])
 
