@@ -95,6 +95,7 @@ flags.DEFINE_float('start2', 0.0, 'x_start, y')
 flags.DEFINE_float('end1', 0.5, 'x_end, x')
 flags.DEFINE_float('end2', 0.5, 'x_end, y')
 flags.DEFINE_float('eps', 0.01, 'epsilon for done condition')
+flags.DEFINE_list('obstacle', [0.25, 0.35, 0.3, 0.3], 'a size 4 array specifying top left and bottom right')
 
 FLAGS.batch_size *= FLAGS.num_gpus
 
@@ -373,9 +374,9 @@ def main():
     end_arr = [FLAGS.end1, FLAGS.end2]
 
     if FLAGS.datasource == 'point':
-        env = Point(start_arr, end_arr, FLAGS.eps)
+        env = Point(start_arr, end_arr, FLAGS.eps, FLAGS.obstacle)
     elif FLAGS.datasource == 'maze':
-        env = Maze(start_arr, end_arr, FLAGS.eps)
+        env = Maze(start_arr, end_arr, FLAGS.eps, FLAGS.obstacle)
     else:
         raise KeyError
 
