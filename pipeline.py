@@ -9,6 +9,7 @@ import os
 import os.path as osp
 
 import matplotlib as mpl
+import matplotlib.patches as patches
 import tensorflow as tf
 from baselines.logger import TensorBoardOutputFormat
 from tensorflow.python.platform import flags
@@ -112,7 +113,7 @@ elif FLAGS.datasource == 'maze':
 def log_step_num_exp(d):
     import csv
     with open('get_avg_step_num_log.csv', mode='a+') as csv_file:
-        fieldnames = ['ts', 'start', 'actual_end', 'end', 'plan_steps', 'cond', 'step_num', 'exp', 'iter']
+        fieldnames = ['ts', 'start', 'actual_end', 'end', 'obstacle', 'plan_steps', 'cond', 'step_num', 'exp', 'iter']
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writerow(d)
 
@@ -171,6 +172,7 @@ def get_avg_step_num(target_vars, sess, env):
              'start': start,
              'actual_end': x_start,
              'end': x_end,
+             'obstacle': FLAGS.obstacle,
              'cond': cond,
              'plan_steps': FLAGS.plan_steps,
              'step_num': len(points),
@@ -193,6 +195,15 @@ def get_avg_step_num(target_vars, sess, env):
         save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}.png'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
                                                                            FLAGS.resume_iter, timestamp))
         plt.clf()
+
+        xy = (FLAGS.obstacle[0], FLAGS.obstacle[-1])
+        w, h = FLAGS.obstacle[2] - FLAGS.obstacle[0], FLAGS.obstacle[1] - FLAGS.obstacle[3]
+
+        # create a Rectangle patch as obstacle
+        ax = plt.gca()   # get the current reference
+        rect = patches.Rectangle(xy, w, h, linewidth=1, edgecolor='r', facecolor='none')
+        ax.add_patch(rect)
+
         plt.plot(traj[:, 0], traj[:, 1])
         plt.savefig(save_dir)
 
