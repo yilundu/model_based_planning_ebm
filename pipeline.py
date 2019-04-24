@@ -88,6 +88,7 @@ flags.DEFINE_string('objective', 'cd', 'objective used to train EBM')
 # Parameters for Planning
 flags.DEFINE_integer('plan_steps', 10, 'Number of steps of planning')
 flags.DEFINE_bool('seq_plan', False, 'Whether to use joint planning or sequential planning')
+flags.DEFINE_bool('anneal', False, 'Whether to use simulated annealing for sampling')
 
 # Number of benchmark experiments
 flags.DEFINE_integer('n_benchmark_exp', 0, 'Number of benchmark experiments')
@@ -158,7 +159,7 @@ def get_avg_step_num(target_vars, sess, env):
             if FLAGS.cond:
                 for i in range(actions.shape[1]):
                     obs, _, done, _ = env.step(actions[0, i, :])
-                    target_obs = x_joint[0, i + 1, 0]
+                    target_obs = x_joint[0, i+1, 0]
 
                     print("obs", obs)
                     print("actions", actions[0, i, :])
@@ -347,9 +348,13 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
             cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=actions[:, i])
             cum_energies = cum_energies + cum_energy
 
+        if FLAGS.anneal:
+            anneal_const = tf.cast(counter, tf.float32) / FLAGS.num_steps
+        else:
+            anneal_const = 1
+
         if FLAGS.debug:
             cum_energies = tf.Print(cum_energies, [tf.reduce_mean(cum_energies) / (FLAGS.plan_steps - FLAGS.total_frame + 3)])
-        anneal_const = tf.cast(counter, tf.float32) / FLAGS.num_steps
 
         x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
         x_joint = x_joint - FLAGS.step_lr * anneal_const * x_grad
