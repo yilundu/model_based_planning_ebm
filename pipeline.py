@@ -142,34 +142,54 @@ def get_avg_step_num(target_vars, sess, env):
             x_end = end_point[None, None, None, :]
             x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
 
-            if not FLAGS.cond:
+            if FLAGS.cond:
+                ACTION_PLAN = target_vars['ACTION_PLAN']
+                actions = np.random.uniform(-0.05, 0.05, (1, FLAGS.plan_steps + 1, 2))
+                x_joint, actions = sess.run([x_joint, output_actions],
+                                                   {X_START: x_start, X_END: x_end,
+                                                    X_PLAN: x_plan, ACTION_PLAN: actions})
+            else:
                 x_joint, output_actions = sess.run([x_joint, output_actions],
                                                    {X_START: x_start, X_END: x_end, X_PLAN: x_plan})
                 output_actions = output_actions[None, :, :]
-            else:
-                ACTION_PLAN = target_vars['ACTION_PLAN']
-                actions = np.random.uniform(-0.05, 0.05, (1, FLAGS.plan_steps + 1, 2))
-                x_joint, output_actions = sess.run([x_joint, output_actions],
-                                                   {X_START: x_start, X_END: x_end,
-                                                    X_PLAN: x_plan, ACTION_PLAN: actions})
 
             kill = False
 
-            for i in range(output_actions.shape[1]):
-                obs, _, done, _ = env.step(output_actions[0, i, :])
-                target_obs = x_joint[0, i+1, 0]
+            if FLAGS.cond:
+                for i in range(actions.shape[1]):
+                    obs, _, done, _ = env.step(actions[0, i, :])
+                    target_obs = x_joint[0, i + 1, 0]
 
-                print("obs", obs)
-                print("actions", output_actions[0, i, :])
-                print("target_obs", target_obs)
-                points.append(obs)
+                    print("obs", obs)
+                    print("actions", actions[0, i, :])
+                    print("target_obs", target_obs)
+                    print("done?", done)
+                    points.append(obs)
 
-                if done:
-                    kill = True
-                    break
+                    if done:
+                        kill = True
+                        break
 
-                if np.abs(target_obs - obs).mean() > 0.2:
-                    break
+                    if np.abs(target_obs - obs).mean() > 0.2:
+                        break
+
+            else:
+                for i in range(output_actions.shape[1]):
+                    obs, _, done, _ = env.step(output_actions[0, i, :])
+                    target_obs = x_joint[0, i+1, 0]
+
+                    print("obs", obs)
+                    print("actions", output_actions[0, i, :])
+                    print("target_obs", target_obs)
+                    print("done?", done)
+                    points.append(obs)
+
+                    if done:
+                        kill = True
+                        break
+
+                    if np.abs(target_obs - obs).mean() > 0.2:
+                        break
 
             print("done")
 
@@ -335,6 +355,7 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
         x_joint = x_joint - FLAGS.step_lr * anneal_const * x_grad
         x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
         x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
+
         actions = actions - FLAGS.step_lr * anneal_const * action_grad
         actions = tf.clip_by_value(actions, -1.0, 1.0)
 

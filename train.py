@@ -260,7 +260,6 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
     X_END = target_vars['X_END']
     X_PLAN = target_vars['X_PLAN']
     x_joint = target_vars['x_joint']
-    x_joint = target_vars['x_joint']
 
     if FLAGS.datasource == "point":
         x_start = np.array([0.0, 0.0])[None, None, None, :]
@@ -271,16 +270,17 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
 
     x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
 
+    # run 32 trajectories in each test
     n = 32
     x_start, x_end, x_plan = np.tile(x_start, (n, 1, 1, 1)), np.tile(x_end, (n, 1, 1, 1)), np.tile(x_plan, (n, 1, 1, 1))
 
-    if not FLAGS.cond:
-        x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan})[0]
-    else:
+    if FLAGS.cond:
         ACTION_PLAN = target_vars['ACTION_PLAN']
         actions_tensor = target_vars['actions']
         actions = np.random.uniform(-1.0, 1.0, (n, FLAGS.plan_steps + 1, 2))
         x_joint, actions = sess.run([x_joint, actions_tensor], {X_START: x_start, X_END: x_end, X_PLAN: x_plan, ACTION_PLAN: actions})
+    else:
+        x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan})[0]
 
         print("actions:", actions[0])
     print("x_joint:", x_joint[0])
@@ -491,7 +491,7 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
 
         x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
         # action_grad = tf.Print(action_grad, [action_grad], message="action grads")
-        x_joint = x_joint - FLAGS.step_lr  *  anneal_val * x_grad
+        x_joint = x_joint - FLAGS.step_lr * anneal_val * x_grad
         x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
         x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
 
@@ -725,7 +725,7 @@ def main():
             target_vars = construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN)
 
     sess = tf.InteractiveSession()
-    saver = loader = tf.train.Saver(max_to_keep=10, keep_checkpoint_every_n_hours=2)
+    saver = tf.train.Saver(max_to_keep=10, keep_checkpoint_every_n_hours=2)
 
     total_parameters = 0
     for variable in tf.trainable_variables():
@@ -769,6 +769,7 @@ def main():
 
     if FLAGS.train:
         train(target_vars, saver, sess, logger, dataset_train, actions_train, resume_itr)
+
     if FLAGS.n_benchmark_exp != 0:
         get_avg_step_num(target_vars, sess)
     elif FLAGS.debug:

@@ -33,7 +33,7 @@ class Point(gym.Env):
         action = np.clip(action, -0.05, 0.05)
         print("Actions: ", action)
         temp = self.current + action
-        if self.obstacle != None:
+        if self.obstacle is not None:
             if self.is_step_valid(temp):
                 self.current = temp
             else:
