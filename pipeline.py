@@ -189,9 +189,6 @@ def get_avg_step_num(target_vars, sess, env):
                         kill = True
                         break
 
-                    if np.abs(target_obs - obs).mean() > 0.2:
-                        break
-
             print("done")
 
             if kill:
