@@ -9,6 +9,7 @@ import os
 import os.path as osp
 
 import matplotlib as mpl
+import matplotlib.patches as patches
 import tensorflow as tf
 from baselines.logger import TensorBoardOutputFormat
 from tensorflow.python.platform import flags
@@ -94,6 +95,8 @@ flags.DEFINE_float('start1', 0.0, 'x_start, x')
 flags.DEFINE_float('start2', 0.0, 'x_start, y')
 flags.DEFINE_float('end1', 0.5, 'x_end, x')
 flags.DEFINE_float('end2', 0.5, 'x_end, y')
+flags.DEFINE_float('eps', 0.01, 'epsilon for done condition')
+flags.DEFINE_list('obstacle', [0.25, 0.35, 0.3, 0.3], 'a size 4 array specifying top left and bottom right')
 
 flags.DEFINE_bool('debug', False, 'Print out energies when planning')
 
@@ -112,7 +115,7 @@ elif FLAGS.datasource == 'maze':
 def log_step_num_exp(d):
     import csv
     with open('get_avg_step_num_log.csv', mode='a+') as csv_file:
-        fieldnames = ['ts', 'start', 'end', 'plan_steps', 'cond', 'step_num', 'exp', 'iter']
+        fieldnames = ['ts', 'start', 'actual_end', 'end', 'obstacle', 'plan_steps', 'cond', 'step_num', 'exp', 'iter']
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writerow(d)
 
@@ -121,6 +124,7 @@ def get_avg_step_num(target_vars, sess, env):
     n_exp = FLAGS.n_benchmark_exp
     cond = 'True' if FLAGS.cond else 'False'
     obs = env.reset()
+    start = obs
     collected_trajs = []
 
     for i in range(n_exp):
@@ -175,8 +179,10 @@ def get_avg_step_num(target_vars, sess, env):
         # log number of steps for each experiment
         ts = str(datetime.datetime.now())
         d = {'ts': ts,
-             'start': x_start,
+             'start': start,
+             'actual_end': x_start,
              'end': x_end,
+             'obstacle': FLAGS.obstacle,
              'cond': cond,
              'plan_steps': FLAGS.plan_steps,
              'step_num': len(points),
@@ -186,21 +192,35 @@ def get_avg_step_num(target_vars, sess, env):
 
         collected_trajs.append(np.array(points))
 
-    lengths = []
-    for traj in collected_trajs:
-        traj = traj.squeeze()
-        plt.plot(traj[:, 0], traj[:, 1])
-        lengths.append(traj.shape[0])
-
-    average_length = sum(lengths) / len(lengths)
-
     imgdir = FLAGS.imgdir
     if not osp.exists(imgdir):
         os.makedirs(imgdir)
-    timestamp = str(datetime.datetime.now())
-    save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}.png'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
-                                                                       FLAGS.resume_iter, timestamp))
-    plt.savefig(save_dir)
+
+    lengths = []
+    for traj in collected_trajs:
+        traj = traj.squeeze()
+
+        # save one image for each trajectory
+        timestamp = str(datetime.datetime.now())
+        save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}.png'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
+                                                                           FLAGS.resume_iter, timestamp))
+        plt.clf()
+
+        xy = (FLAGS.obstacle[0], FLAGS.obstacle[-1])
+        w, h = FLAGS.obstacle[2] - FLAGS.obstacle[0], FLAGS.obstacle[1] - FLAGS.obstacle[3]
+
+        # create a Rectangle patch as obstacle
+        ax = plt.gca()   # get the current reference
+        rect = patches.Rectangle(xy, w, h, linewidth=1, edgecolor='r', facecolor='none')
+        ax.add_patch(rect)
+
+        plt.plot(traj[:, 0], traj[:, 1])
+        plt.savefig(save_dir)
+
+        # save all length for calculation of average length
+        lengths.append(traj.shape[0])
+
+    average_length = sum(lengths) / len(lengths)
     print("average number of steps:", average_length)
 
 
@@ -377,9 +397,9 @@ def main():
     end_arr = [FLAGS.end1, FLAGS.end2]
 
     if FLAGS.datasource == 'point':
-        env = Point(start_arr, end_arr)
+        env = Point(start_arr, end_arr, FLAGS.eps, FLAGS.obstacle)
     elif FLAGS.datasource == 'maze':
-        env = Maze(start_arr, end_arr)
+        env = Maze(start_arr, end_arr, FLAGS.eps, FLAGS.obstacle)
     else:
         raise KeyError
 
