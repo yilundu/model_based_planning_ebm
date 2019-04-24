@@ -389,7 +389,7 @@ def main():
     tf.global_variables_initializer().run()
     print("Initializing variables...")
 
-    if FLAGS.resume_iter != -1 or not FLAGS.train:
+    if FLAGS.resume_iter != -1:
         model_file = osp.join(logdir, 'model_{}'.format(FLAGS.resume_iter))
         saver.restore(sess, model_file)
 
