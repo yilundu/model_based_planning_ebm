@@ -95,6 +95,8 @@ flags.DEFINE_float('start2', 0.0, 'x_start, y')
 flags.DEFINE_float('end1', 0.5, 'x_end, x')
 flags.DEFINE_float('end2', 0.5, 'x_end, y')
 
+flags.DEFINE_bool('debug', False, 'Print out energies when planning')
+
 FLAGS.batch_size *= FLAGS.num_gpus
 
 # set_seed(FLAGS.seed)
@@ -151,13 +153,21 @@ def get_avg_step_num(target_vars, sess, env):
 
             for i in range(output_actions.shape[1]):
                 obs, _, done, _ = env.step(output_actions[0, i, :])
+                target_obs = x_joint[0, i+1, 0]
+
                 print("obs", obs)
                 print("actions", output_actions[0, i, :])
+                print("target_obs", target_obs)
                 points.append(obs)
 
                 if done:
                     kill = True
                     break
+
+                if np.abs(target_obs - obs).mean() > 0.2:
+                    break
+
+            print("done")
 
             if kill:
                 break
@@ -296,13 +306,15 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
             cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=actions[:, i])
             cum_energies = cum_energies + cum_energy
 
-        # cum_energies = tf.Print(cum_energies, [cum_energies])
+        if FLAGS.debug:
+            cum_energies = tf.Print(cum_energies, [tf.reduce_mean(cum_energies) / (FLAGS.plan_steps - FLAGS.total_frame + 3)])
+        anneal_const = tf.cast(counter, tf.float32) / FLAGS.num_steps
 
         x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
-        x_joint = x_joint - FLAGS.step_lr * tf.cast(counter, tf.float32) / FLAGS.num_steps * x_grad
+        x_joint = x_joint - FLAGS.step_lr * anneal_const * x_grad
         x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
         x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
-        actions = actions - FLAGS.step_lr * tf.cast(counter, tf.float32) / FLAGS.num_steps * action_grad
+        actions = actions - FLAGS.step_lr * anneal_const * action_grad
         actions = tf.clip_by_value(actions, -1.0, 1.0)
 
         counter = counter + 1

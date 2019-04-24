@@ -66,6 +66,7 @@ class Maze(gym.Env):
 
     def step(self, action):
         # Scale down action from range (-1, 1) to (-0.05, 0.05)
+        action = action / np.abs(action).max()
         action = action / 20.
 
         reward = 0
@@ -73,7 +74,7 @@ class Maze(gym.Env):
 
         action = np.clip(action, -0.05, 0.05)
         temp = self.current + action
-        if is_maze_valid(temp[None, :][0]):
+        if is_maze_valid(temp[None, :])[0]:
             self.current = temp
         else:
             pass

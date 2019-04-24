@@ -136,20 +136,20 @@ class TrajNetLatentFC(object):
     def forward(self, inp, weights, reuse=False, scope='', stop_grad=False, stop_at_grad=False, noise=True, action_label=False):
         weights = weights.copy()
         batch_size = tf.shape(inp)[0]
+        print(inp.get_shape())
 
         def swish(inp):
             return inp * tf.nn.sigmoid(inp)
 
         joint = inp
-        print(joint.get_shape())
         joint = tf.reshape(joint, (-1, FLAGS.input_objects*self.dim_input*(FLAGS.total_frame)))
 
         if action_label is not None and (FLAGS.cond):
             joint = tf.concat([joint, action_label], axis=1)
 
-        h1 = swish(tf.matmul(joint, weights['w1']) + weights['b1'])
-        h2 = swish(tf.matmul(h1, weights['w2']) + weights['b2'])
-        h3 = swish(tf.matmul(h2, weights['w3']) + weights['b3'])
+        h1 = tf.nn.leaky_relu(tf.matmul(joint, weights['w1']) + weights['b1'])
+        h2 = tf.nn.leaky_relu(tf.matmul(h1, weights['w2']) + weights['b2'])
+        h3 = tf.nn.leaky_relu(tf.matmul(h2, weights['w3']) + weights['b3'])
         energy = tf.matmul(h3, weights['w6'])
 
         return energy
@@ -183,7 +183,7 @@ class TrajInverseDynamics(object):
         return weights
 
     def forward(self, inp, weights, reuse=False, scope='', stop_grad=False, stop_at_grad=False, noise=True,
-                action_label=False):
+                action_label=None):
         weights = weights.copy()
         batch_size = tf.shape(inp)[0]
 
@@ -196,9 +196,9 @@ class TrajInverseDynamics(object):
         if action_label is not None and FLAGS.cond:
             joint = tf.concat([joint, action_label], axis=1)
 
-        h1 = swish(tf.matmul(joint, weights['inv_w1']) + weights['inv_b1'])
-        h2 = swish(tf.matmul(h1, weights['inv_w2']) + weights['inv_b2'])
-        h3 = swish(tf.matmul(h2, weights['inv_w3']) + weights['inv_b3'])
+        h1 = tf.nn.relu(tf.matmul(joint, weights['inv_w1']) + weights['inv_b1'])
+        h2 = tf.nn.relu(tf.matmul(h1, weights['inv_w2']) + weights['inv_b2'])
+        h3 = (tf.matmul(h2, weights['inv_w3']) + weights['inv_b3'])
         energy = tf.matmul(h3, weights['inv_w6'])
 
         return energy

@@ -46,6 +46,7 @@ flags.DEFINE_integer('save_interval', 1000, 'save outputs every so many batches'
 flags.DEFINE_integer('test_interval', 1000, 'evaluate outputs every so many batches')
 flags.DEFINE_integer('resume_iter', -1, 'iteration to resume training from')
 flags.DEFINE_bool('train', True, 'whether to train or test')
+flags.DEFINE_bool('debug', False, 'debug what is going on for conditional models')
 flags.DEFINE_integer('epoch_num', 10, 'Number of Epochs to train on')
 flags.DEFINE_float('lr', 1e-3, 'Learning for training')
 flags.DEFINE_integer('seed', 0, 'Value of seed')
@@ -87,6 +88,7 @@ flags.DEFINE_string('objective', 'cd', 'objective used to train EBM')
 # Parameters for Planning 
 flags.DEFINE_integer('plan_steps', 10, 'Number of steps of planning')
 flags.DEFINE_bool('seq_plan', False, 'Whether to use joint planning or sequential planning')
+flags.DEFINE_bool('anneal', False, 'Whether to use simulated annealing for sampling')
 
 # Number of benchmark experiments
 flags.DEFINE_integer('n_benchmark_exp', 0, 'Number of benchmark experiments')
@@ -157,19 +159,22 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
     loss_total = target_vars['total_loss']
     gvs = target_vars['gvs']
     x_grad = target_vars['x_grad']
+    action_grad = target_vars['action_grad']
     x_off = target_vars['x_off']
     temp = target_vars['temp']
     x_mod = target_vars['x_mod']
     weights = target_vars['weights']
     lr = target_vars['lr']
     ACTION_LABEL = target_vars['ACTION_LABEL']
+    ACTION_NOISE_LABEL = target_vars['ACTION_NOISE_LABEL']
     dyn_loss = target_vars['dyn_loss']
     dyn_dist = target_vars['dyn_dist']
+    progress_diff = target_vars['progress_diff']
 
     gvs_dict = dict(gvs)
 
     # remove gradient logging since it is slow
-    log_output = [train_op, dyn_loss, dyn_dist, energy_pos, energy_neg, loss_energy, loss_ml, loss_total, x_grad, x_off, x_mod,
+    log_output = [train_op, dyn_loss, dyn_dist, energy_pos, energy_neg, loss_energy, loss_ml, loss_total, x_grad, action_grad, x_off, x_mod, progress_diff, 
                   *gvs_dict.keys()]
     output = [train_op, x_mod]
 
@@ -180,7 +185,7 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
     print(dataloader.shape)
     random_combo = list(product(range(FLAGS.total_frame, dataloader.shape[1]-FLAGS.total_frame), range(0, dataloader.shape[0]-FLAGS.batch_size, FLAGS.batch_size)))
 
-    replay_buffer = ReplayBuffer(50000)
+    replay_buffer = ReplayBuffer(500000)
 
     for epoch in range(FLAGS.epoch_num):
         random.shuffle(random_combo)
@@ -188,24 +193,27 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
         for j, i in random_combo:
             label = dataloader[:, j-FLAGS.total_frame:j]
             label_i = label[perm_idx[i:i+FLAGS.batch_size]]
-            if FLAGS.type == 'random':
-                data_corrupt = np.random.uniform(-1.0, 1.0, (FLAGS.batch_size, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim))
-            elif FLAGS.type == 'past':
-                data_corrupt = label_i
-                data_corrupt += np.random.uniform(-0.3, 0.3, size=data_corrupt.shape)
+            data_corrupt = np.random.uniform(-1.2, 1.2, (FLAGS.batch_size, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim))
 
             feed_dict = {X: label_i, X_NOISE: data_corrupt, lr: FLAGS.lr}
 
             feed_dict[ACTION_LABEL] = actions[perm_idx[i:i+FLAGS.batch_size], j-FLAGS.total_frame+1]
+            feed_dict[ACTION_NOISE_LABEL] = np.random.uniform(-1.2, 1.2, (FLAGS.batch_size, 2))
+
+            # print("Action label", feed_dict[ACTION_LABEL][0])
+            # print("Action noise label", feed_dict[ACTION_NOISE_LABEL][0])
+            # print(label_i.shape)
+            # print("X label", (label_i[:, 1, 0] - label_i[:, 0, 0]) - feed_dict[ACTION_LABEL] / 20)
+            # assert False
 
             if len(replay_buffer) > FLAGS.batch_size:
                 replay_batch = replay_buffer.sample(FLAGS.batch_size)
-                replay_mask = (np.random.uniform(0, 1, (FLAGS.batch_size)) > 0.01)
-                replay_batch = np.clip(replay_batch, -1, 1)
+                replay_mask = (np.random.uniform(0, 1, (FLAGS.batch_size)) > 0.001)
+                # replay_batch = np.clip(replay_batch, -1, 1)
                 data_corrupt[replay_mask] = replay_batch[replay_mask]
 
             if itr % FLAGS.log_interval == 0:
-                _, dyn_loss, dyn_dist, e_pos, e_neg, loss_e, loss_ml, loss_total, x_grad, x_off, x_mod, *grads = sess.run(
+                _, dyn_loss, dyn_dist, e_pos, e_neg, loss_e, loss_ml, loss_total, x_grad, action_grad, x_off, x_mod, progress_diff, *grads = sess.run(
                     log_output, feed_dict)
 
                 kvs = {}
@@ -215,10 +223,12 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
                 kvs['loss_e'] = loss_e.mean()
                 kvs['dyn_loss'] = dyn_loss.mean()
                 kvs['dyn_dist'] = dyn_dist.mean()
+                kvs['progress_diff'] = progress_diff.mean()
 
                 kvs['loss_ml'] = loss_ml.mean()
                 kvs['loss_total'] = loss_total.mean()
                 kvs['x_grad'] = np.abs(x_grad).mean()
+                kvs['action_grad'] = np.abs(action_grad).mean()
                 kvs['x_off'] = x_off.mean()
                 kvs['iter'] = itr
 
@@ -250,9 +260,15 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
     X_END = target_vars['X_END']
     X_PLAN = target_vars['X_PLAN']
     x_joint = target_vars['x_joint']
+    x_joint = target_vars['x_joint']
 
-    x_start = np.array([0.0, 0.0])[None, None, None, :]
-    x_end = np.array([0.5, 0.5])[None, None, None, :]
+    if FLAGS.datasource == "point":
+        x_start = np.array([0.0, 0.0])[None, None, None, :]
+        x_end = np.array([0.5, 0.5])[None, None, None, :]
+    elif FLAGS.datasource == "maze":
+        x_start = np.array([0.1, 0.0])[None, None, None, :]
+        x_end = np.array([0.7, -0.8])[None, None, None, :]
+
     x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
 
     n = 32
@@ -262,11 +278,12 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
         x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan})[0]
     else:
         ACTION_PLAN = target_vars['ACTION_PLAN']
+        actions_tensor = target_vars['actions']
         actions = np.random.uniform(-1.0, 1.0, (n, FLAGS.plan_steps + 1, 2))
-        x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan, ACTION_PLAN: actions})[0]
+        x_joint, actions = sess.run([x_joint, actions_tensor], {X_START: x_start, X_END: x_end, X_PLAN: x_plan, ACTION_PLAN: actions})
 
-        print("x_joint:", x_joint[0])
         print("actions:", actions[0])
+    print("x_joint:", x_joint[0])
 
     for i in range(n):
         x_joint_i = x_joint[i]
@@ -288,6 +305,24 @@ def log_step_num_exp(d):
         fieldnames = ['ts', 'start', 'end', 'plan_steps', 'no_cond', 'step_num', 'exp', 'iter']
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writerow(d)
+
+def debug(target_vars, sess):
+    X = target_vars['X']
+    ACTION_LABEL = target_vars['ACTION_LABEL']
+    energy_pos = target_vars['energy_pos']
+    n = 100
+
+    debug_frame = np.array([[0.05, 0.05], [0.0, 0.0]])[None, :, None, :]
+    actions_sample = np.linspace(-1, 1, n)
+    actions_x, actions_y = np.meshgrid(actions_sample, actions_sample)
+    actions_tot = np.stack([actions_x[:, :, None], actions_y[:, :, None]], axis=2)
+
+    actions_label = actions_tot.reshape((-1, 2))
+    debug_frame = np.tile(debug_frame, (actions_label.shape[0], 1, 1, 1))
+    energy_pos = sess.run([energy_pos], {X: debug_frame, ACTION_LABEL: actions_label})[0]
+    energy_pos = energy_pos.reshape((n, n))
+    plt.imshow(energy_pos, cmap='hot', interpolation='nearest')
+    plt.savefig("cmap.png")
 
 
 def get_avg_step_num(target_vars, sess):
@@ -447,14 +482,20 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
             cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=actions[:, i])
             cum_energies = cum_energies + cum_energy
 
-        cum_energies = tf.Print(cum_energies, [cum_energies])
+        cum_energies = tf.Print(cum_energies, [cum_energies], message="energies")
+
+        if FLAGS.anneal:
+            anneal_val = tf.cast(counter, tf.float32) / FLAGS.num_steps
+        else:
+            anneal_val = 1
 
         x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
-        x_joint = x_joint - FLAGS.step_lr  * tf.cast(counter, tf.float32) / FLAGS.num_steps * x_grad
+        # action_grad = tf.Print(action_grad, [action_grad], message="action grads")
+        x_joint = x_joint - FLAGS.step_lr  *  anneal_val * x_grad
         x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
         x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
 
-        actions = actions - FLAGS.step_lr  * tf.cast(counter, tf.float32) / FLAGS.num_steps * action_grad
+        actions = actions - FLAGS.step_lr * anneal_val * action_grad
         actions = tf.clip_by_value(actions, -1.0, 1.0)
 
         counter = counter + 1
@@ -473,7 +514,7 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
     return target_vars
 
 
-def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, LR, optimizer):
+def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, LR, optimizer):
     target_vars = {}
     x_mods = []
 
@@ -526,13 +567,16 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, LR, optimizer):
             energy_noise = model.forward(x_mod, weights, action_label=action_label, reuse=True, stop_at_grad=True)
             lr =  FLAGS.step_lr
 
+            x_grad = tf.gradients(FLAGS.temperature * energy_noise, [x_mod])[0]
+
+            x_mod = x_mod - lr * x_grad
+
             if FLAGS.cond:
                 x_grad, action_grad = tf.gradients(FLAGS.temperature * energy_noise, [x_mod, action_label])
             else:
                 x_grad, action_grad = tf.gradients(FLAGS.temperature * energy_noise, [x_mod])[0], tf.zeros(1)
 
-            x_mod = x_mod - lr * x_grad
-            action_label = action_label - lr * 0.1 * action_grad
+            action_label = action_label - FLAGS.step_lr * action_grad
 
         x_mod = tf.clip_by_value(x_mod, -1.2, 1.2)
         action_label = tf.clip_by_value(action_label, -1.2, 1.2)
@@ -541,7 +585,15 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, LR, optimizer):
 
         return counter, x_mod, action_label
 
-    steps, x_mod, action_label = tf.while_loop(c, mcmc_step, (steps, x_mod, ACTION_LABEL))
+
+    steps, x_mod, action_label = tf.while_loop(c, mcmc_step, (steps, x_mod, ACTION_NOISE_LABEL))
+    # action_label = tf.Print(action_label, [action_label], "action label (HELP ME)")
+
+    if FLAGS.cond:
+        progress_diff = tf.reduce_mean(tf.abs((x_mod[:, 1, 0] - x_mod[:, 0, 0]) - action_label / 20))
+        # progress_diff = tf.reduce_mean(tf.abs((X[:, 1, 0] - X[:, 0, 0]) - ACTION_LABEL / 20))
+    else:
+        progress_diff = tf.zeros(1)
 
     target_vars['x_mod'] = x_mod
     temp = FLAGS.temperature
@@ -551,7 +603,10 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, LR, optimizer):
     action_label = tf.stop_gradient(action_label)
 
     energy_neg = model.forward(x_mod, weights, action_label=action_label, reuse=True)
-    x_grad = tf.gradients(FLAGS.temperature * energy_neg, [x_mod])[0]
+    if FLAGS.cond:
+        x_grad, action_grad = tf.gradients(FLAGS.temperature * energy_neg, [x_mod, action_label])
+    else:
+        x_grad, action_grad = tf.gradients(FLAGS.temperature * energy_neg, [x_mod])[0], tf.zeros(1)
     x_off = tf.reduce_mean(tf.square(x_mod - X))
 
     if FLAGS.train:
@@ -571,13 +626,13 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, LR, optimizer):
             loss_ml = FLAGS.ml_coeff * \
                 tf.nn.softplus(temp * (energy_pos - energy_neg))
 
-    loss_total = tf.reduce_mean(loss_ml)
+        loss_total = tf.reduce_mean(loss_ml)
 
-    if not FLAGS.zero_kl:
-        loss_total = loss_total + tf.reduce_mean(loss_energy)
+        if not FLAGS.zero_kl:
+            loss_total = loss_total + tf.reduce_mean(loss_energy)
 
-    loss_total = loss_total + \
-        FLAGS.l2_coeff * (tf.reduce_mean(tf.square(energy_pos)) + tf.reduce_mean(tf.square((energy_neg))))
+        loss_total = loss_total + \
+            FLAGS.l2_coeff * (tf.reduce_mean(tf.square(energy_pos)) + tf.reduce_mean(tf.square((energy_neg))))
 
     if FLAGS.inverse_dynamics:
         output_action = dyn_model.forward(X, weights)
@@ -612,22 +667,26 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, LR, optimizer):
 
         target_vars['train_op'] = train_op
 
-    print("Finished applying gradients.")
-    target_vars['loss_ml'] = loss_ml
-    target_vars['total_loss'] = loss_total
-    target_vars['gvs'] = gvs
-    target_vars['loss_energy'] = loss_energy
+        print("Finished applying gradients.")
+        target_vars['loss_ml'] = loss_ml
+        target_vars['total_loss'] = loss_total
+        target_vars['gvs'] = gvs
+        target_vars['loss_energy'] = loss_energy
+
     target_vars['weights'] = weights
     target_vars['X'] = X
     target_vars['X_NOISE'] = X_NOISE
     target_vars['energy_pos'] = energy_pos
     target_vars['energy_neg'] = energy_neg
     target_vars['x_grad'] = x_grad
+    target_vars['action_grad'] = action_grad
     target_vars['x_mod'] = x_mod
     target_vars['x_off'] = x_off
     target_vars['temp'] = temp
     target_vars['lr'] = LR
     target_vars['ACTION_LABEL'] = ACTION_LABEL
+    target_vars['ACTION_NOISE_LABEL'] = ACTION_NOISE_LABEL
+    target_vars['progress_diff'] = progress_diff
 
     return target_vars
 
@@ -646,6 +705,7 @@ def main():
         X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
 
         ACTION_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
+        ACTION_NOISE_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
         ACTION_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps+1, 2), dtype=tf.float32)
 
         X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
@@ -656,8 +716,8 @@ def main():
     LR = tf.placeholder(tf.float32, [])
     optimizer = AdamOptimizer(LR, beta1=0.0, beta2=0.999)
 
-    if FLAGS.train:
-        target_vars = construct_model(model, weights, X_NOISE, X, ACTION_LABEL, LR, optimizer)
+    if FLAGS.train or FLAGS.debug:
+        target_vars = construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, LR, optimizer)
     else:
         if not FLAGS.cond:
             target_vars = construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL)
@@ -709,9 +769,10 @@ def main():
 
     if FLAGS.train:
         train(target_vars, saver, sess, logger, dataset_train, actions_train, resume_itr)
-
     if FLAGS.n_benchmark_exp != 0:
         get_avg_step_num(target_vars, sess)
+    elif FLAGS.debug:
+        debug(target_vars, sess)
     else:
         test(target_vars, saver, sess, logdir, dataset_test, actions_test, dataset_train)
 
