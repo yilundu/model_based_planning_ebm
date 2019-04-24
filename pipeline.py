@@ -96,7 +96,7 @@ flags.DEFINE_float('start2', 0.0, 'x_start, y')
 flags.DEFINE_float('end1', 0.5, 'x_end, x')
 flags.DEFINE_float('end2', 0.5, 'x_end, y')
 flags.DEFINE_float('eps', 0.01, 'epsilon for done condition')
-flags.DEFINE_list('obstacle', [0.25, 0.35, 0.3, 0.3], 'a size 4 array specifying top left and bottom right')
+flags.DEFINE_list('obstacle', None, 'a size 4 array specifying top left and bottom right, e.g. [0.25, 0.35, 0.3, 0.3]')
 
 flags.DEFINE_bool('debug', False, 'Print out energies when planning')
 
@@ -206,13 +206,14 @@ def get_avg_step_num(target_vars, sess, env):
                                                                            FLAGS.resume_iter, timestamp))
         plt.clf()
 
-        xy = (FLAGS.obstacle[0], FLAGS.obstacle[-1])
-        w, h = FLAGS.obstacle[2] - FLAGS.obstacle[0], FLAGS.obstacle[1] - FLAGS.obstacle[3]
+        if FLAGS.obstacle != None:
+            xy = (FLAGS.obstacle[0], FLAGS.obstacle[-1])
+            w, h = FLAGS.obstacle[2] - FLAGS.obstacle[0], FLAGS.obstacle[1] - FLAGS.obstacle[3]
 
-        # create a Rectangle patch as obstacle
-        ax = plt.gca()   # get the current reference
-        rect = patches.Rectangle(xy, w, h, linewidth=1, edgecolor='r', facecolor='none')
-        ax.add_patch(rect)
+            # create a Rectangle patch as obstacle
+            ax = plt.gca()   # get the current reference
+            rect = patches.Rectangle(xy, w, h, linewidth=1, edgecolor='r', facecolor='none')
+            ax.add_patch(rect)
 
         plt.plot(traj[:, 0], traj[:, 1])
         plt.savefig(save_dir)
