@@ -23,6 +23,7 @@ import numpy as np
 from custom_adam import AdamOptimizer
 # from render_utils import render_reach
 import seaborn as sns
+from gen_data import is_maze_valid
 
 from envs import Point, Maze
 
@@ -129,6 +130,7 @@ def get_avg_step_num(target_vars, sess, env):
 
     for i in range(n_exp):
         points = []
+        length = 0
         while True:
             current_point = obs
             end_point = env.end
@@ -156,24 +158,29 @@ def get_avg_step_num(target_vars, sess, env):
             kill = False
 
             for i in range(output_actions.shape[1]):
+                length += 1
                 obs, _, done, _ = env.step(output_actions[0, i, :])
                 target_obs = x_joint[0, i+1, 0]
 
                 print("obs", obs)
                 print("actions", output_actions[0, i, :])
                 print("target_obs", target_obs)
+                print("end_point", env.end)
                 points.append(obs)
 
                 if done:
                     kill = True
                     break
 
-                if np.abs(target_obs - obs).mean() > 0.2:
+                if np.abs(target_obs - obs).mean() > 0.15:
                     break
 
             print("done")
 
             if kill:
+                break
+
+            if length > 2000:
                 break
 
         # log number of steps for each experiment
@@ -210,9 +217,16 @@ def get_avg_step_num(target_vars, sess, env):
         w, h = FLAGS.obstacle[2] - FLAGS.obstacle[0], FLAGS.obstacle[1] - FLAGS.obstacle[3]
 
         # create a Rectangle patch as obstacle
-        ax = plt.gca()   # get the current reference
-        rect = patches.Rectangle(xy, w, h, linewidth=1, edgecolor='r', facecolor='none')
-        ax.add_patch(rect)
+        if FLAGS.datasource == "point":
+            ax = plt.gca()   # get the current reference
+            rect = patches.Rectangle(xy, w, h, linewidth=1, edgecolor='r', facecolor='none')
+            ax.add_patch(rect)
+        elif FLAGS.datasource == "maze":
+            # Plot the values of boundaries of the maze
+            samples = np.random.uniform(-1, 1, (100000, 2))
+            ob_mask = ~is_maze_valid(samples)
+            walls = samples[ob_mask]
+            plt.plot(walls[:, 0], walls[:, 1], 'ko')
 
         plt.plot(traj[:, 0], traj[:, 1])
         plt.savefig(save_dir)
@@ -283,6 +297,12 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
                 cum_energies.append(cum_energy)
 
             cum_energies = tf.reduce_sum(tf.concat(cum_energies, axis=1), axis=1)
+
+            if FLAGS.debug:
+                cum_energies = tf.Print(cum_energies, [tf.reduce_mean(cum_energies)])
+
+            cum_energies = cum_energies + 1e-8 * tf.reduce_mean(tf.square(x_joint - X_END))
+
             x_grad = tf.gradients(cum_energies, [x_joint])[0]
             x_joint = x_joint - FLAGS.step_lr * tf.cast(counter, tf.float32) / FLAGS.num_steps * x_grad
 
@@ -328,6 +348,8 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
 
         if FLAGS.debug:
             cum_energies = tf.Print(cum_energies, [tf.reduce_mean(cum_energies) / (FLAGS.plan_steps - FLAGS.total_frame + 3)])
+
+        # cum_energies = cum_energies + 0.000001 * tf.square(x_joint - X_END)
         anneal_const = tf.cast(counter, tf.float32) / FLAGS.num_steps
 
         x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
@@ -399,7 +421,7 @@ def main():
     if FLAGS.datasource == 'point':
         env = Point(start_arr, end_arr, FLAGS.eps, FLAGS.obstacle)
     elif FLAGS.datasource == 'maze':
-        env = Maze(start_arr, end_arr, FLAGS.eps, FLAGS.obstacle)
+        env = Maze([0.1, 0.0], [0.7, -0.8], FLAGS.eps, FLAGS.obstacle)
     else:
         raise KeyError
 
