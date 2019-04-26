@@ -21,6 +21,7 @@ flags.DEFINE_string('exp', 'rl_default', 'name of experiment')
 flags.DEFINE_integer('num_env', 128, 'batch size and number of planning steps')
 flags.DEFINE_string('logdir', 'cachedir', 'location where log of rl experiments will be stored')
 flags.DEFINE_bool('train', True, 'whether to train with environmental interaction or not')
+flags.DEFINE_bool('debug', False, 'print out outputs of information')
 flags.DEFINE_integer('save_interval', 1000, 'save outputs every so many batches')
 flags.DEFINE_integer('test_interval', 1000, 'evaluate outputs every so many batches')
 flags.DEFINE_integer('log_interval', 10, 'interval to log values')
@@ -34,6 +35,7 @@ flags.DEFINE_integer('latent_dim', 24, 'Number of dimension encoding state of ob
 flags.DEFINE_integer('action_dim', 24, 'Number of dimension for encoding action of object')
 flags.DEFINE_integer('input_objects', 1, 'Number of objects to predict the trajectory of.')
 flags.DEFINE_bool('spec_norm', True, 'Whether to use spectral normalization on weights')
+flags.DEFINE_bool('fast_goal', True, 'Try to reach the goal quicly')
 
 # EBM settings
 flags.DEFINE_integer('num_steps', 20, 'Steps of gradient descent for training')
@@ -80,12 +82,14 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
     energy_pos = target_vars['energy_pos']
     energy_neg = target_vars['energy_neg']
     loss_total = target_vars['loss_total']
+    dyn_loss = target_vars['dyn_loss']
+    dyn_dist = target_vars['dyn_dist']
 
     ob = env.reset()
     ob = ob[:, None, None, :]
 
     output = [train_op, x_mod]
-    log_output = [train_op, energy_pos, energy_neg, loss_ml, loss_total, x_grad, action_grad, x_mod]
+    log_output = [train_op, dyn_loss, dyn_dist, energy_pos, energy_neg, loss_ml, loss_total, x_grad, action_grad, x_mod]
 
     print(log_output)
     replay_buffer = ReplayBuffer(100000)
@@ -97,6 +101,9 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         x_end = np.tile(np.array([[0.5, 0.5]]), (FLAGS.num_env, 1))[:, None, None, :]
         x_traj, traj_actions = sess.run([x_joint, actions], {X_START: ob, X_PLAN: x_plan, X_END: x_end, ACTION_PLAN: action_plan})
         traj_actions = np.clip(traj_actions, -1, 1)
+
+        if FLAGS.debug:
+            print(x_traj[0])
 
         old_ob = ob
         ob, _, _, infos = env.step(traj_actions[:, 0])
@@ -125,7 +132,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
 
 
         if itr % FLAGS.log_interval == 0:
-            _, e_pos, e_neg, loss_ml, loss_total, x_grad, action_grad, x_mod = sess.run(log_output, feed_dict=feed_dict)
+            _, dyn_loss, dyn_dist, e_pos, e_neg, loss_ml, loss_total, x_grad, action_grad, x_mod = sess.run(log_output, feed_dict=feed_dict)
             kvs = {}
             kvs['e_pos'] = e_pos.mean()
             kvs['e_neg'] = e_neg.mean()
@@ -133,6 +140,8 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
             kvs['loss_total'] = loss_total.mean()
             kvs['x_grad'] = np.abs(x_grad).mean()
             kvs['action_grad'] = np.abs(action_grad).mean()
+            kvs['dyn_loss'] = dyn_loss.mean()
+            kvs['dyn_dist'] = np.abs(dyn_dist).mean()
             kvs['iter'] = itr
             kvs["train_episode_length_mean"] = safemean([epinfo['l'] for epinfo in epinfos])
 
@@ -173,6 +182,12 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, ta
             anneal_val = tf.cast(counter, tf.float32) / FLAGS.num_steps
         else:
             anneal_val = 1
+
+        if FLAGS.debug:
+            cum_energies = tf.Print(cum_energies, [cum_energies], message="energy")
+
+        if FLAGS.fast_goal:
+            cum_energies = cum_energies + tf.reduce_mean(tf.square(x_joint - X_END))
 
         x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
         x_joint = x_joint - FLAGS.step_lr  *  anneal_val * x_grad
@@ -328,13 +343,14 @@ def main():
         os.makedirs(logdir)
     logger = TensorBoardOutputFormat(logdir)
 
+    datasource = FLAGS.datasource
     def make_env(rank):
         def _thunk():
 
             # Make the environments non stoppable for now
-            if FLAGS.datasource == "maze":
+            if datasource == "maze":
                 env = Maze(end=[1.2, 1.2], start=[-0.85, -0.85])
-            elif FLAGS.datasource == "point":
+            elif datasource == "point":
                 env = Point(end=[0.5, 0.5], start=[0.0, 0.0], random_starts=True)
             env.seed(rank)
             env = Monitor(env, os.path.join("/tmp", str(rank)), allow_early_resets=True)
