@@ -89,6 +89,7 @@ flags.DEFINE_string('objective', 'cd', 'objective used to train EBM')
 # Parameters for Planning
 flags.DEFINE_integer('plan_steps', 10, 'Number of steps of planning')
 flags.DEFINE_bool('seq_plan', False, 'Whether to use joint planning or sequential planning')
+flags.DEFINE_bool('anneal', False, 'Whether to use simulated annealing for sampling')
 
 # Number of benchmark experiments
 flags.DEFINE_integer('n_benchmark_exp', 0, 'Number of benchmark experiments')
@@ -97,7 +98,7 @@ flags.DEFINE_float('start2', 0.0, 'x_start, y')
 flags.DEFINE_float('end1', 0.5, 'x_end, x')
 flags.DEFINE_float('end2', 0.5, 'x_end, y')
 flags.DEFINE_float('eps', 0.01, 'epsilon for done condition')
-flags.DEFINE_list('obstacle', [0.25, 0.35, 0.3, 0.3], 'a size 4 array specifying top left and bottom right')
+flags.DEFINE_list('obstacle', None, 'a size 4 array specifying top left and bottom right, e.g. [0.25, 0.35, 0.3, 0.3]')
 
 flags.DEFINE_bool('debug', False, 'Print out energies when planning')
 
@@ -144,36 +145,54 @@ def get_avg_step_num(target_vars, sess, env):
             x_end = end_point[None, None, None, :]
             x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
 
-            if not FLAGS.cond:
+            if FLAGS.cond:
+                ACTION_PLAN = target_vars['ACTION_PLAN']
+                actions = np.random.uniform(-0.05, 0.05, (1, FLAGS.plan_steps + 1, 2))
+                x_joint, actions = sess.run([x_joint, output_actions],
+                                                   {X_START: x_start, X_END: x_end,
+                                                    X_PLAN: x_plan, ACTION_PLAN: actions})
+            else:
                 x_joint, output_actions = sess.run([x_joint, output_actions],
                                                    {X_START: x_start, X_END: x_end, X_PLAN: x_plan})
                 output_actions = output_actions[None, :, :]
-            else:
-                ACTION_PLAN = target_vars['ACTION_PLAN']
-                actions = np.random.uniform(-0.05, 0.05, (1, FLAGS.plan_steps + 1, 2))
-                x_joint, output_actions = sess.run([x_joint, output_actions],
-                                                   {X_START: x_start, X_END: x_end,
-                                                    X_PLAN: x_plan, ACTION_PLAN: actions})
 
             kill = False
 
-            for i in range(output_actions.shape[1]):
-                length += 1
-                obs, _, done, _ = env.step(output_actions[0, i, :])
-                target_obs = x_joint[0, i+1, 0]
+            if FLAGS.cond:
+                for i in range(actions.shape[1]):
+                    obs, _, done, _ = env.step(actions[0, i, :])
+                    target_obs = x_joint[0, i+1, 0]
 
-                print("obs", obs)
-                print("actions", output_actions[0, i, :])
-                print("target_obs", target_obs)
-                print("end_point", env.end)
-                points.append(obs)
+                    print("obs", obs)
+                    print("actions", actions[0, i, :])
+                    print("target_obs", target_obs)
+                    print("done?", done)
+                    points.append(obs)
 
-                if done:
-                    kill = True
-                    break
+                    if done:
+                        kill = True
+                        break
 
-                if np.abs(target_obs - obs).mean() > 0.15:
-                    break
+                    if np.abs(target_obs - obs).mean() > 0.2:
+                        break
+
+            else:
+                for i in range(output_actions.shape[1]):
+                    obs, _, done, _ = env.step(output_actions[0, i, :])
+                    target_obs = x_joint[0, i+1, 0]
+
+                    print("obs", obs)
+                    print("actions", output_actions[0, i, :])
+                    print("target_obs", target_obs)
+                    print("done?", done)
+                    points.append(obs)
+
+                    if done:
+                        kill = True
+                        break
+
+                    if np.abs(target_obs - obs).mean() > 0.15:
+                        break
 
             print("done")
 
@@ -213,8 +232,9 @@ def get_avg_step_num(target_vars, sess, env):
                                                                            FLAGS.resume_iter, timestamp))
         plt.clf()
 
-        xy = (FLAGS.obstacle[0], FLAGS.obstacle[-1])
-        w, h = FLAGS.obstacle[2] - FLAGS.obstacle[0], FLAGS.obstacle[1] - FLAGS.obstacle[3]
+        if FLAGS.obstacle != None:
+            xy = (FLAGS.obstacle[0], FLAGS.obstacle[-1])
+            w, h = FLAGS.obstacle[2] - FLAGS.obstacle[0], FLAGS.obstacle[1] - FLAGS.obstacle[3]
 
         # create a Rectangle patch as obstacle
         if FLAGS.datasource == "point":
@@ -346,6 +366,11 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
             cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=actions[:, i])
             cum_energies = cum_energies + cum_energy
 
+        if FLAGS.anneal:
+            anneal_const = tf.cast(counter, tf.float32) / FLAGS.num_steps
+        else:
+            anneal_const = 1
+
         if FLAGS.debug:
             cum_energies = tf.Print(cum_energies, [tf.reduce_mean(cum_energies) / (FLAGS.plan_steps - FLAGS.total_frame + 3)])
 
@@ -356,6 +381,7 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
         x_joint = x_joint - FLAGS.step_lr * anneal_const * x_grad
         x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
         x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
+
         actions = actions - FLAGS.step_lr * anneal_const * action_grad
         actions = tf.clip_by_value(actions, -1.0, 1.0)
 
@@ -411,7 +437,7 @@ def main():
     tf.global_variables_initializer().run()
     print("Initializing variables...")
 
-    if FLAGS.resume_iter != -1 or not FLAGS.train:
+    if FLAGS.resume_iter != -1:
         model_file = osp.join(logdir, 'model_{}'.format(FLAGS.resume_iter))
         saver.restore(sess, model_file)
 
