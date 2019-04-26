@@ -5,16 +5,21 @@ from gen_data import is_maze_valid
 
 
 class Point(gym.Env):
-    def __init__(self, start=[0.0, 0.0], end=[0.5, 0.5], eps=0.01, obstacle=None):
+    def __init__(self, start=[0.0, 0.0], end=[0.5, 0.5], eps=0.05, obstacle=None, random_starts=False):
         self.start = np.array(start)
         self.end = np.array(end)
         self.current = np.array(start)
         self.obstacle = obstacle  # obstacle should be a size 4 array specifying top left and bottom right
+        self.random_starts = random_starts
 
         self.eps = eps
 
     def reset(self):
-        self.current = self.start
+        if self.random_starts:
+            self.current = self.start
+        else:
+            self.current = np.random.uniform(-1, 1, (2))
+
         return self.current
 
     def is_step_valid(self, pos):
@@ -31,7 +36,6 @@ class Point(gym.Env):
         info = {}
 
         action = np.clip(action, -0.05, 0.05)
-        print("Actions: ", action)
         temp = self.current + action
         if self.obstacle is not None:
             if self.is_step_valid(temp):
@@ -51,9 +55,12 @@ class Point(gym.Env):
 
         return observation, reward, done, info
 
+    def seed(self, seed):
+        np.random.seed(seed)
+
 
 class Maze(gym.Env):
-    def __init__(self, start=[0.1, 0.0], end=[0.7, -0.8], eps=0.01):
+    def __init__(self, start=[0.1, 0.0], end=[0.7, -0.8], eps=0.01, obstacle=[0.1, 0.1]):
         self.start = np.array(start)
         self.end = np.array(end)
         self.current = np.array(start)
@@ -88,3 +95,6 @@ class Maze(gym.Env):
             done = False
 
         return observation, reward, done, info
+
+    def seed(self, seed):
+        np.random.seed(seed)

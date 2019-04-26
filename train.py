@@ -2,8 +2,10 @@ import datetime
 import os
 import os.path as osp
 import random
+from gen_data import is_maze_valid
 
 import matplotlib as mpl
+import matplotlib.patches as patches
 import tensorflow as tf
 # from rl_algs.logger import TensorBoardOutputFormat
 from baselines.logger import TensorBoardOutputFormat
@@ -270,8 +272,8 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
 
     x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
 
-    # run 32 trajectories in each test
-    n = 32
+    n = 1
+
     x_start, x_end, x_plan = np.tile(x_start, (n, 1, 1, 1)), np.tile(x_end, (n, 1, 1, 1)), np.tile(x_plan, (n, 1, 1, 1))
 
     if FLAGS.cond:
@@ -290,12 +292,24 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
         x, y = zip(*list(x_joint_i.squeeze()))
         plt.plot(x, y)
 
+    if FLAGS.datasource == "maze":
+        ax = plt.gca()
+        rect = patches.Rectangle((-0.75, -1.0), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
+        ax.add_patch(rect)
+        rect = patches.Rectangle((-0.25, -0.75), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
+        ax.add_patch(rect)
+        rect = patches.Rectangle((0.25, -1.0), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
+        ax.add_patch(rect)
+        rect = patches.Rectangle((0.75, -0.75), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
+        ax.add_patch(rect)
+
     imgdir = FLAGS.imgdir
     if not osp.exists(imgdir):
         os.makedirs(imgdir)
 
     timestamp = str(datetime.datetime.now())
     save_dir = osp.join(imgdir, 'test_exp{}_iter{}_{}.png'.format(FLAGS.exp, FLAGS.resume_iter, timestamp))
+    plt.tight_layout()
     plt.savefig(save_dir)
 
 

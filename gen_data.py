@@ -1,10 +1,50 @@
 import numpy as np
+import gym
+from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
+from tqdm import tqdm
 
 import matplotlib
 matplotlib.use('Agg')
 
 import matplotlib.pyplot as plt
 
+def gen_fetch():
+    # 
+    def make_fetch_env(rank):
+        def _thunk():
+            env = gym.make("FetchPush-v1")
+            env.seed(rank)
+            return env
+        return _thunk
+
+    start_index = 0
+    num_env = 128
+
+    env =  SubprocVecEnv([make_fetch_env(i + start_index) for i in range(num_env)])
+
+    trajs = []
+    actions = []
+
+    for i in tqdm(range(1000)):
+        traj = []
+        obs = env.reset()
+        action = np.random.uniform(-1., 1., (num_env, 100, 4))
+
+        for t in range(100):
+            ob, _, done, _, = env.step(action[:, t])
+            traj.append(ob['observation'])
+
+        traj = np.stack(traj, axis=1)
+
+        trajs.append(traj)
+        actions.append(action)
+
+    trajs = np.concatenate(trajs, axis=0)
+    actions = np.concatenate(actions, axis=0)
+
+    print(trajs.shape)
+    print(actions.shape)
+    np.savez("push.npz", obs=trajs, action=actions)
 
 def gen_simple():
     # Free form movement on entire unit square from -1 to 1
@@ -68,5 +108,6 @@ def gen_maze():
 
 
 if __name__ == "__main__":
-    gen_simple()
-    gen_maze()
+    # gen_simple()
+    # gen_maze()
+    gen_fetch()
