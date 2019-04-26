@@ -12,7 +12,7 @@ from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
 from tensorflow.python.platform import flags
 from traj_model import TrajNetLatentFC, TrajInverseDynamics
 from custom_adam import AdamOptimizer
-from rl_algs.bench import Monitor
+from baselines.bench import Monitor
 
 FLAGS = flags.FLAGS
 
