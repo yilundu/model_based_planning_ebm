@@ -42,11 +42,12 @@ flags.DEFINE_bool('replay_batch', False, 'Whether to use a replay buffer for sam
 flags.DEFINE_bool('cond', False, 'Whether to condition on actions')
 flags.DEFINE_integer('temperature', 1, 'Temperature for energy function')
 flags.DEFINE_bool('inverse_dynamics', True, 'Whether to train a inverse dynamics model')
+flags.DEFINE_integer('num_plan_steps', 50, 'Steps of planning')
 
 # Settings for MCMC
 flags.DEFINE_float('step_lr', 1.0, 'Size of steps for gradient descent')
 flags.DEFINE_integer('plan_steps', 20, 'Number of steps of planning')
-flags.DEFINE_bool('anneal', True, 'To anneal sampling')
+flags.DEFINE_bool('anneal', False, 'To anneal sampling')
 
 # Environment Interaction Settings
 flags.DEFINE_float('nsteps', 1e6, 'Number of steps of environment interaction')
@@ -95,7 +96,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         action_plan = np.random.uniform(-1, 1, (FLAGS.num_env, FLAGS.plan_steps + 1, 2))
         x_end = np.tile(np.array([[0.5, 0.5]]), (FLAGS.num_env, 1))[:, None, None, :]
         x_traj, traj_actions = sess.run([x_joint, actions], {X_START: ob, X_PLAN: x_plan, X_END: x_end, ACTION_PLAN: action_plan})
-        traj_actions = np.clip(traj_actions, -0.05, 0.05)
+        traj_actions = np.clip(traj_actions, -1, 1)
 
         old_ob = ob
         ob, _, _, infos = env.step(traj_actions[:, 0])
@@ -157,7 +158,7 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, ta
     actions = ACTION_PLAN
     x_joint = tf.concat([X_START, X_PLAN, X_END], axis=1)
     steps = tf.constant(0)
-    c = lambda i, x, y: tf.less(i, FLAGS.num_steps)
+    c = lambda i, x, y: tf.less(i, FLAGS.num_plan_steps)
 
     def mcmc_step(counter, x_joint, actions):
         if FLAGS.cond:
