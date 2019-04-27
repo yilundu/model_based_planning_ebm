@@ -40,7 +40,7 @@ flags.DEFINE_bool('fast_goal', True, 'Try to reach the goal quicly')
 # EBM settings
 flags.DEFINE_integer('num_steps', 20, 'Steps of gradient descent for training')
 flags.DEFINE_integer('total_frame', 2, 'Number of frames to use')
-flags.DEFINE_bool('replay_batch', False, 'Whether to use a replay buffer for samples')
+flags.DEFINE_bool('replay_batch', True, 'Whether to use a replay buffer for samples')
 flags.DEFINE_bool('cond', False, 'Whether to condition on actions')
 flags.DEFINE_integer('temperature', 1, 'Temperature for energy function')
 flags.DEFINE_bool('inverse_dynamics', True, 'Whether to train a inverse dynamics model')
@@ -85,14 +85,14 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
     dyn_loss = target_vars['dyn_loss']
     dyn_dist = target_vars['dyn_dist']
 
-    ob = env.reset()
-    ob = ob[:, None, None, :]
+    ob = env.reset()[:, None, None, :]
 
     output = [train_op, x_mod]
     log_output = [train_op, dyn_loss, dyn_dist, energy_pos, energy_neg, loss_ml, loss_total, x_grad, action_grad, x_mod]
 
     print(log_output)
     replay_buffer = ReplayBuffer(100000)
+    pos_replay_buffer = ReplayBuffer(100000)
 
     epinfos = []
     for itr in range(resume_iter, tot_iter):
@@ -105,15 +105,24 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         if FLAGS.debug:
             print(x_traj[0])
 
-        old_ob = ob
-        ob, _, _, infos = env.step(traj_actions[:, 0])
+        obs = [ob[:, 0, 0, :]]
+        for i in range(traj_actions.shape[1]):
+            action = traj_actions[:, i]
+            ob, _, _, infos = env.step(action)
+            obs.append(ob)
 
-        for info in infos:
-            maybeepinfo = info.get('episode')
-            if maybeepinfo: epinfos.append(maybeepinfo)
+            for info in infos:
+                maybeepinfo = info.get('episode')
+                if maybeepinfo: epinfos.append(maybeepinfo)
 
-        ob = ob[:, None, None, :]
-        ob_pair = np.concatenate([old_ob, ob], axis=1)
+        ob =  ob[:, None, None, :]
+
+        obs = np.stack(obs, axis=1)[:, :, None, :]
+        ob_pair = np.stack([obs[:, :-1], obs[:, 1:]], axis=2)
+        s = ob_pair.shape
+        ob_pair = ob_pair.reshape((s[0] * s[1], s[2], s[3], s[4]))
+
+        action = traj_actions.reshape((-1, FLAGS.action_dim))
 
         x_noise = np.stack([x_traj[:, :-1], x_traj[:, 1:]], axis=2)
         s = x_noise.shape
@@ -122,7 +131,19 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         s = action_noise_neg.shape
         action_noise_neg = action_noise_neg.reshape((s[0]*s[1], s[2]))
 
-        feed_dict = {X: ob_pair, X_NOISE: x_noise_neg, ACTION_NOISE: action_noise_neg, ACTION_LABEL: traj_actions[:, 0]}
+        traj_action_encode = traj_actions.reshape((-1, 1, 1, FLAGS.action_dim))
+        encode_data = np.concatenate([ob_pair, np.tile(traj_action_encode, (1, FLAGS.total_frame, 1, 1))], axis=3)
+        pos_replay_buffer.add(encode_data)
+        if len(replay_buffer) > FLAGS.num_env * FLAGS.plan_steps:
+            sample_data = pos_replay_buffer.sample(FLAGS.num_env * FLAGS.plan_steps)
+            sample_ob = sample_data[:, :, :, :-FLAGS.action_dim]
+            sample_actions = sample_data[:, 0, 0, -FLAGS.action_dim:]
+
+            ob_pair = np.concatenate([ob_pair, sample_ob], axis=0)
+            action = np.concatenate([action, sample_actions], axis=0)
+
+
+        feed_dict = {X: ob_pair, X_NOISE: x_noise_neg, ACTION_NOISE: action_noise_neg, ACTION_LABEL: action}
 
         batch_size = x_noise_neg.shape[0]
         if FLAGS.replay_batch and len(replay_buffer) > batch_size:

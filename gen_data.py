@@ -14,6 +14,7 @@ def gen_fetch():
         def _thunk():
             env = gym.make("FetchPush-v1")
             env.seed(rank)
+            env = QposWrapper(env)
             return env
         return _thunk
 
@@ -32,7 +33,7 @@ def gen_fetch():
 
         for t in range(100):
             ob, _, done, _, = env.step(action[:, t])
-            traj.append(ob['observation'])
+            traj.append(ob)
 
         traj = np.stack(traj, axis=1)
 
@@ -45,6 +46,75 @@ def gen_fetch():
     print(trajs.shape)
     print(actions.shape)
     np.savez("push.npz", obs=trajs, action=actions)
+
+class QposWrapper(gym.Wrapper):
+    def reset(self):
+        self.env.reset()
+        return self.get_obs()
+
+    def step(self, action):
+        ob, reward, done, info = self.env.step(action)
+        ob = self.get_obs()
+        return ob, reward, done, info
+
+    def get_obs(self):
+        return self.env.sim.data.qpos.copy()
+
+
+class ReacherWrapper(gym.Wrapper):
+    def reset(self):
+        self.env.reset()
+        return self.get_obs()
+
+    def step(self, action):
+        ob, reward, done, info = self.env.step(action)
+        ob = self.get_obs()
+        return ob, reward, done, info
+
+    def get_obs(self):
+        qpos = self.env.sim.data.qpos.copy()
+        qvel = self.env.sim.data.qvel.copy()
+        obs = np.concatenate([qpos[:2], qvel[:2]], axis=0)
+        return obs
+
+def gen_reacher():
+    # 
+    def make_fetch_env(rank):
+        def _thunk():
+            env = gym.make("Reacher-v2")
+            env.seed(rank)
+            env = ReacherWrapper(env)
+            return env
+        return _thunk
+
+    start_index = 0
+    num_env = 128
+
+    env =  SubprocVecEnv([make_fetch_env(i + start_index) for i in range(num_env)])
+
+    trajs = []
+    actions = []
+
+    for i in tqdm(range(1000)):
+        traj = []
+        obs = env.reset()
+        action = np.random.uniform(-1., 1., (num_env, 100, 2))
+
+        for t in range(100):
+            ob, _, done, _, = env.step(action[:, t])
+            traj.append(ob)
+
+        traj = np.stack(traj, axis=1)
+
+        trajs.append(traj)
+        actions.append(action)
+
+    trajs = np.concatenate(trajs, axis=0)
+    actions = np.concatenate(actions, axis=0)
+
+    print(trajs.shape)
+    print(actions.shape)
+    np.savez("reacher.npz", obs=trajs, action=actions)
 
 def gen_simple():
     # Free form movement on entire unit square from -1 to 1
@@ -110,4 +180,5 @@ def gen_maze():
 if __name__ == "__main__":
     # gen_simple()
     # gen_maze()
-    gen_fetch()
+    gen_reacher()
+    # gen_fetch()

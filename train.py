@@ -3,6 +3,7 @@ import os
 import os.path as osp
 import random
 from gen_data import is_maze_valid
+import imageio
 
 import matplotlib as mpl
 import matplotlib.patches as patches
@@ -34,7 +35,7 @@ FLAGS = flags.FLAGS
 
 # Dataset Options
 flags.DEFINE_string('type', 'random', 'random or past for initialization of new frame')
-flags.DEFINE_string('datasource', 'point', 'point or maze')
+flags.DEFINE_string('datasource', 'point', 'point or maze or reacher')
 flags.DEFINE_integer('batch_size', 256, 'Size of inputs')
 flags.DEFINE_bool('single', False, 'whether to train on a single task')
 flags.DEFINE_integer('data_workers', 6, 'Number of different data workers to load data in parallel')
@@ -109,6 +110,9 @@ if FLAGS.datasource == 'point':
 elif FLAGS.datasource == 'maze':
     FLAGS.latent_dim = 2
     FLAGS.action_dim = 2
+elif FLAGS.datasource == "reacher":
+    FLAGS.latent_dim = 4
+    FLAGS.action_dim = 2
 
 def make_image(tensor):
     """Convert an numpy representation image to Image protobuf"""
@@ -176,7 +180,7 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
     gvs_dict = dict(gvs)
 
     # remove gradient logging since it is slow
-    log_output = [train_op, dyn_loss, dyn_dist, energy_pos, energy_neg, loss_energy, loss_ml, loss_total, x_grad, action_grad, x_off, x_mod, progress_diff, 
+    log_output = [train_op, dyn_loss, dyn_dist, energy_pos, energy_neg, loss_energy, loss_ml, loss_total, x_grad, action_grad, x_off, x_mod, progress_diff,
                   *gvs_dict.keys()]
     output = [train_op, x_mod]
 
@@ -187,7 +191,7 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
     print(dataloader.shape)
     random_combo = list(product(range(FLAGS.total_frame, dataloader.shape[1]-FLAGS.total_frame), range(0, dataloader.shape[0]-FLAGS.batch_size, FLAGS.batch_size)))
 
-    replay_buffer = ReplayBuffer(500000)
+    replay_buffer = ReplayBuffer(10000)
 
     for epoch in range(FLAGS.epoch_num):
         random.shuffle(random_combo)
@@ -269,6 +273,10 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
     elif FLAGS.datasource == "maze":
         x_start = np.array([0.1, 0.0])[None, None, None, :]
         x_end = np.array([0.7, -0.8])[None, None, None, :]
+    elif FLAGS.datasource == "reacher":
+        x_start = np.array([0.00895044, -0.02340578, -0.06503, -0.16671105])[None, None, None, :] * 55
+        # x_end = np.array([0.7, -0.8])[None, None, None, :]
+        x_end = x_start
 
     x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
 
@@ -287,30 +295,49 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
         print("actions:", actions[0])
     print("x_joint:", x_joint[0])
 
-    for i in range(n):
-        x_joint_i = x_joint[i]
-        x, y = zip(*list(x_joint_i.squeeze()))
-        plt.plot(x, y)
-
-    if FLAGS.datasource == "maze":
-        ax = plt.gca()
-        rect = patches.Rectangle((-0.75, -1.0), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
-        ax.add_patch(rect)
-        rect = patches.Rectangle((-0.25, -0.75), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
-        ax.add_patch(rect)
-        rect = patches.Rectangle((0.25, -1.0), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
-        ax.add_patch(rect)
-        rect = patches.Rectangle((0.75, -0.75), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
-        ax.add_patch(rect)
-
     imgdir = FLAGS.imgdir
     if not osp.exists(imgdir):
         os.makedirs(imgdir)
-
     timestamp = str(datetime.datetime.now())
-    save_dir = osp.join(imgdir, 'test_exp{}_iter{}_{}.png'.format(FLAGS.exp, FLAGS.resume_iter, timestamp))
-    plt.tight_layout()
-    plt.savefig(save_dir)
+
+    # Generate 2D plots of particle movement in the environment
+    if FLAGS.datasource == "point" or FLAGS.datasource == "maze":
+        for i in range(n):
+            x_joint_i = x_joint[i]
+            x, y = zip(*list(x_joint_i.squeeze()))
+            plt.plot(x, y)
+
+        if FLAGS.datasource == "maze":
+            ax = plt.gca()
+            rect = patches.Rectangle((-0.75, -1.0), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
+            ax.add_patch(rect)
+            rect = patches.Rectangle((-0.25, -0.75), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
+            ax.add_patch(rect)
+            rect = patches.Rectangle((0.25, -1.0), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
+            ax.add_patch(rect)
+            rect = patches.Rectangle((0.75, -0.75), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
+            ax.add_patch(rect)
+
+
+        save_dir = osp.join(imgdir, 'test_exp{}_iter{}_{}.png'.format(FLAGS.exp, FLAGS.resume_iter, timestamp))
+        plt.tight_layout()
+        plt.savefig(save_dir)
+
+    elif FLAGS.datasource == "pusher":
+    # Generate 2D Videos of Particles Moving
+        dats = x_joint[0]
+        env = gym.make("Reacher-v2")
+        sim = env.sim
+        ims = []
+
+        for i in range(dats.shape[0]):
+            state = dats[i]
+            sim.data.qpos[:] = state
+            im = sim.render(256, 256)
+            ims.append(im)
+
+        save_file = osp.join(imgdir, 'test_exp{}_iter{}_{}.gif'.format(FLAGS.exp, FLAGS.resume_iter, timestamp))
+        imageio.mimwrite(save_file, ims)
 
 
 def log_step_num_exp(d):
@@ -713,7 +740,7 @@ def main():
     # Only know the setting for omniglot, not sure about others
     batch_size = FLAGS.batch_size
 
-    if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze':
+    if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze' or FLAGS.datasource == 'reacher':
         model = TrajNetLatentFC(dim_input=FLAGS.total_frame)
         X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
         X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
@@ -766,11 +793,20 @@ def main():
     if FLAGS.datasource == 'maze':
         dataset = np.load('maze.npz')['obs'][:, :, None, :]
         actions = np.load('maze.npz')['action']
+    if FLAGS.datasource == "reacher":
+        dataset = np.load('reacher.npz')['obs'][:, :, None, :]
+        actions = np.load('reacher.npz')['action']
+
+        dataset = dataset / 55.
+
+        # mean, std = dataset_flat.mean(axis=0), dataset_flat.std(axis=0)
+        # std = std + 1e-5
+        # dataset = (dataset - mean) / std
+
+        # print(dataset.max())
+        # print(dataset.min())
 
     # dataset_flat = dataset.reshape((-1, dataset.shape[-1]))
-    # mean, std = dataset_flat.mean(axis=0), dataset_flat.std(axis=0)
-    # std = std + 1e-5
-    # dataset = (dataset - mean) / std
     split_idx = int(dataset.shape[0] * 0.9)
 
     dataset_train = dataset[:split_idx]
