@@ -387,6 +387,14 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
         # cum_energies = cum_energies + 0.000001 * tf.square(x_joint - X_END)
         anneal_const = tf.cast(counter, tf.float32) / FLAGS.num_steps
 
+        if FLAGS.constraint_vel:
+            v = tf.reduce_sum(tf.square((x_joint[:, 1:] - x_joint[:, :-1])))
+            cum_energies += v
+
+        if FLAGS.constraint_goal:
+            d = tf.reduce_sum(tf.square(x_joint - X_END))
+            cum_energies += d
+
         x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
         x_joint = x_joint - FLAGS.step_lr * anneal_const * x_grad
         x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
