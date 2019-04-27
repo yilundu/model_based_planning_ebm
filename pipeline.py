@@ -100,6 +100,10 @@ flags.DEFINE_float('end2', 0.5, 'x_end, y')
 flags.DEFINE_float('eps', 0.01, 'epsilon for done condition')
 flags.DEFINE_list('obstacle', None, 'a size 4 array specifying top left and bottom right, e.g. [0.25, 0.35, 0.3, 0.3]')
 
+# Additional constraints
+flags.DEFINE_bool('constraint_vel', False, 'A distance constraint between each subsequent state')
+flags.DEFINE_bool('constraint_goal', False, 'A distance constraint between current state and goal state')
+
 flags.DEFINE_bool('debug', False, 'Print out energies when planning')
 
 FLAGS.batch_size *= FLAGS.num_gpus
@@ -321,7 +325,13 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
             if FLAGS.debug:
                 cum_energies = tf.Print(cum_energies, [tf.reduce_mean(cum_energies)])
 
-            cum_energies = cum_energies + 1e-8 * tf.reduce_mean(tf.square(x_joint - X_END))
+            if FLAGS.constraint_vel:
+                v = tf.reduce_sum(tf.square((x_joint[1:] - x_joint[:-1])))
+                cum_energies += v
+
+            if FLAGS.constraint_goal:
+                d = tf.reduce_sum(tf.square(x_joint - X_END))
+                cum_energies += d
 
             x_grad = tf.gradients(cum_energies, [x_joint])[0]
             x_joint = x_joint - FLAGS.step_lr * tf.cast(counter, tf.float32) / FLAGS.num_steps * x_grad
