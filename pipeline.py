@@ -326,7 +326,7 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
                 cum_energies = tf.Print(cum_energies, [tf.reduce_mean(cum_energies)])
 
             if FLAGS.constraint_vel:
-                v = tf.reduce_sum(tf.square((x_joint[1:] - x_joint[:-1])))
+                v = tf.reduce_sum(tf.square((x_joint[:, 1:] - x_joint[:, :-1])))
                 cum_energies += v
 
             if FLAGS.constraint_goal:
