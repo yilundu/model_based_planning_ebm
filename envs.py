@@ -16,9 +16,11 @@ class Point(gym.Env):
 
     def reset(self):
         if self.random_starts:
-            self.current = self.start
-        else:
             self.current = np.random.uniform(-1, 1, (2))
+        else:
+            self.current = self.start
+
+        # print("Reset ", self.current)
 
         return self.current
 
@@ -60,20 +62,29 @@ class Point(gym.Env):
 
 
 class Maze(gym.Env):
-    def __init__(self, start=[0.1, 0.0], end=[0.7, -0.8], eps=0.01, obstacle=[0.1, 0.1]):
+    def __init__(self, start=[0.1, 0.0], end=[0.7, -0.8], eps=0.01, obstacle=[0.1, 0.1], random_starts=False):
         self.start = np.array(start)
         self.end = np.array(end)
         self.current = np.array(start)
+        self.random_starts = random_starts
 
         self.eps = eps
 
     def reset(self):
-        self.current = self.start
+        if self.random_starts:
+            self.current = np.random.uniform(-1, 1, (2))
+            if not is_maze_valid(self.current[None, :])[0]:
+                self.reset()
+        else:
+            self.current = self.start
+
+        print("Reset: ", self.current)
+
         return self.current
 
     def step(self, action):
         # Scale down action from range (-1, 1) to (-0.05, 0.05)
-        action = action / np.abs(action).max()
+        action = action / (np.abs(action).max() + 1e-5)
         action = action / 20.
 
         reward = 0
