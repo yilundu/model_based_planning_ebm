@@ -94,6 +94,8 @@ flags.DEFINE_integer('plan_steps', 10, 'Number of steps of planning')
 flags.DEFINE_bool('seq_plan', False, 'Whether to use joint planning or sequential planning')
 flags.DEFINE_bool('anneal', False, 'Whether to use simulated annealing for sampling')
 
+flags.DEFINE_integer('n_exp', 1, 'Number of tests run')
+
 FLAGS.batch_size *= FLAGS.num_gpus
 
 # set_seed(FLAGS.seed)
@@ -278,7 +280,7 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, s
     x_plan = interp_weights * x_start + (1 - interp_weights) * x_end
     x_plan = x_plan[:, 1:-1]
 
-    n = 1
+    n = FLAGS.n_exp
 
     x_start, x_end, x_plan = np.tile(x_start, (n, 1, 1, 1)), np.tile(x_end, (n, 1, 1, 1)), np.tile(x_plan, (n, 1, 1, 1))
 
@@ -317,7 +319,7 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, s
             ax.add_patch(rect)
 
 
-        save_dir = osp.join(imgdir, 'test_exp{}_iter{}_{}.png'.format(FLAGS.exp, FLAGS.resume_iter, timestamp))
+        save_dir = osp.join(imgdir, 'test_exp_{}_iter{}_{}.png'.format(FLAGS.exp, FLAGS.resume_iter, timestamp))
         plt.tight_layout()
         plt.savefig(save_dir)
 
