@@ -240,17 +240,17 @@ def get_avg_step_num(target_vars, sess, env):
             xy = (FLAGS.obstacle[0], FLAGS.obstacle[-1])
             w, h = FLAGS.obstacle[2] - FLAGS.obstacle[0], FLAGS.obstacle[1] - FLAGS.obstacle[3]
 
-        # create a Rectangle patch as obstacle
-        if FLAGS.datasource == "point":
-            ax = plt.gca()   # get the current reference
-            rect = patches.Rectangle(xy, w, h, linewidth=1, edgecolor='r', facecolor='none')
-            ax.add_patch(rect)
-        elif FLAGS.datasource == "maze":
-            # Plot the values of boundaries of the maze
-            samples = np.random.uniform(-1, 1, (100000, 2))
-            ob_mask = ~is_maze_valid(samples)
-            walls = samples[ob_mask]
-            plt.plot(walls[:, 0], walls[:, 1], 'ko')
+            # create a Rectangle patch as obstacle
+            if FLAGS.datasource == "point":
+                ax = plt.gca()   # get the current reference
+                rect = patches.Rectangle(xy, w, h, linewidth=1, edgecolor='r', facecolor='none')
+                ax.add_patch(rect)
+            elif FLAGS.datasource == "maze":
+                # Plot the values of boundaries of the maze
+                samples = np.random.uniform(-1, 1, (100000, 2))
+                ob_mask = ~is_maze_valid(samples)
+                walls = samples[ob_mask]
+                plt.plot(walls[:, 0], walls[:, 1], 'ko')
 
         plt.plot(traj[:, 0], traj[:, 1])
         plt.savefig(save_dir)
