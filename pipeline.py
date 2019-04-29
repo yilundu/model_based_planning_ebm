@@ -106,6 +106,8 @@ flags.DEFINE_bool('constraint_goal', False, 'A distance constraint between curre
 
 flags.DEFINE_bool('debug', False, 'Print out energies when planning')
 
+flags.DEFINE_bool('save_single', False, 'Save every single trajectory')
+
 FLAGS.batch_size *= FLAGS.num_gpus
 
 # set_seed(FLAGS.seed)
@@ -232,9 +234,6 @@ def get_avg_step_num(target_vars, sess, env):
 
         # save one image for each trajectory
         timestamp = str(datetime.datetime.now())
-        save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}.png'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
-                                                                           FLAGS.resume_iter, timestamp))
-        plt.clf()
 
         if FLAGS.obstacle != None:
             xy = (FLAGS.obstacle[0], FLAGS.obstacle[-1])
@@ -253,10 +252,20 @@ def get_avg_step_num(target_vars, sess, env):
                 plt.plot(walls[:, 0], walls[:, 1], 'ko')
 
         plt.plot(traj[:, 0], traj[:, 1])
-        plt.savefig(save_dir)
+
+        if FLAGS.save_single:
+            save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}.png'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
+                                                                               FLAGS.resume_iter, timestamp))
+            plt.savefig(save_dir)
+            plt.clf()
 
         # save all length for calculation of average length
         lengths.append(traj.shape[0])
+
+    if not FLAGS.save_single:
+        save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}.png'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
+                                                                           FLAGS.resume_iter, timestamp))
+        plt.savefig(save_dir)
 
     average_length = sum(lengths) / len(lengths)
     print("average number of steps:", average_length)
