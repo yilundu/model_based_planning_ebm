@@ -231,6 +231,8 @@ def get_avg_step_num(target_vars, sess, env):
     lengths = []
     for traj in collected_trajs:
         traj = traj.squeeze()
+        if traj.ndim == 1:
+            traj = np.expand_dims(traj, 0)
 
         # save one image for each trajectory
         timestamp = str(datetime.datetime.now())
