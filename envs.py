@@ -19,9 +19,7 @@ class Point(gym.Env):
             self.current = np.random.uniform(-1, 1, (2))
         else:
             self.current = self.start
-
         # print("Reset ", self.current)
-
         return self.current
 
     def is_step_valid(self, pos):

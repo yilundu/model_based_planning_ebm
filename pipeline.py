@@ -177,7 +177,7 @@ def get_avg_step_num(target_vars, sess, env):
                         kill = True
                         break
 
-                    if np.abs(target_obs - obs).mean() > 0.2:
+                    if np.abs(target_obs - obs).mean() > 0.15:
                         break
 
             else:
@@ -203,7 +203,7 @@ def get_avg_step_num(target_vars, sess, env):
             if kill:
                 break
 
-            if length > 2000:
+            if length > 10000:
                 break
 
         # log number of steps for each experiment
@@ -388,7 +388,7 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
         anneal_const = tf.cast(counter, tf.float32) / FLAGS.num_steps
 
         if FLAGS.constraint_vel:
-            v = tf.reduce_sum(tf.square((x_joint[:, 1:] - x_joint[:, :-1])))
+            v = 0.5 * tf.reduce_sum(tf.square((x_joint[:, 1:] - x_joint[:, :-1])))
             cum_energies += v
 
         if FLAGS.constraint_goal:
