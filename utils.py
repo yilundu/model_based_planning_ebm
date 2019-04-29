@@ -16,6 +16,27 @@ flags.DEFINE_bool('downsample', False, 'Wheter to do average pool downsampling')
 flags.DEFINE_bool('spec_eval', False, 'Set to true to prevent spectral updates')
 
 
+def parse_valid_obs(obs, actions, dones):
+    """Given obs, actions, and dones array, return a set of valid transitions"""
+
+    # Literally just do a for loop through the obs to generate the actions needed
+    t_obs = []
+    t_actions = []
+
+    for i in range(obs.shape[0]):
+        for t in range(1, obs.shape[1]):
+            if not dones[i, t-1]:
+                pair_obs = obs[i, t-1:t+1]
+                action = actions[i, t-1]
+
+                t_obs.append(pair_obs)
+                t_actions.append(action)
+
+    t_actions = np.array(t_actions)
+    t_obs = np.array(t_obs)
+
+    return t_actions, t_obs
+
 def get_median(v):
     v = tf.reshape(v, [-1])
     m = tf.shape(v)[0]//2

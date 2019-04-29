@@ -1,4 +1,5 @@
 import datetime
+import gym
 import os
 import os.path as osp
 import random
@@ -22,7 +23,7 @@ import numpy as np
 from itertools import product
 from custom_adam import AdamOptimizer
 # from render_utils import render_reach
-from utils import ReplayBuffer
+from utils import ReplayBuffer, parse_valid_obs
 import seaborn as sns
 
 sns.set()
@@ -214,7 +215,7 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
 
             if len(replay_buffer) > FLAGS.batch_size:
                 replay_batch = replay_buffer.sample(FLAGS.batch_size)
-                replay_mask = (np.random.uniform(0, 1, (FLAGS.batch_size)) > 0.001)
+                replay_mask = (np.random.uniform(0, 1, (FLAGS.batch_size)) > 0.01)
                 # replay_batch = np.clip(replay_batch, -1, 1)
                 data_corrupt[replay_mask] = replay_batch[replay_mask]
 
@@ -261,7 +262,7 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
 
     saver.save(sess, osp.join(FLAGS.logdir, FLAGS.exp, 'model_{}'.format(itr)))
 
-def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
+def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, std):
     X_START = target_vars['X_START']
     X_END = target_vars['X_END']
     X_PLAN = target_vars['X_PLAN']
@@ -274,11 +275,15 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
         x_start = np.array([0.1, 0.0])[None, None, None, :]
         x_end = np.array([0.7, -0.8])[None, None, None, :]
     elif FLAGS.datasource == "reacher":
-        x_start = np.array([0.00895044, -0.02340578, -0.06503, -0.16671105])[None, None, None, :] * 55
+        # x_start = (np.array([0.00895044, -0.02340578, 0.0, 0.0])[None, None, None, :] - mean) / std
+        # x_start = (np.array([0.08984227,  0.06335336, 0.0, 0.0])[None, None, None, :] - mean) / std
+        x_start = data[1:2, 0:1]
         # x_end = np.array([0.7, -0.8])[None, None, None, :]
-        x_end = x_start
+        x_end = data[1:2, FLAGS.plan_steps+1:FLAGS.plan_steps+2]
 
-    x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
+    interp_weights = np.linspace(0, 1, FLAGS.plan_steps+2)[None, :, None, None]
+    x_plan = interp_weights * x_start + (1 - interp_weights) * x_end
+    x_plan = x_plan[:, 1:-1]
 
     n = 1
 
@@ -287,7 +292,7 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
     if FLAGS.cond:
         ACTION_PLAN = target_vars['ACTION_PLAN']
         actions_tensor = target_vars['actions']
-        actions = np.random.uniform(-1.0, 1.0, (n, FLAGS.plan_steps + 1, 2))
+        actions = np.random.uniform(-1.0, 1.0, (n, FLAGS.plan_steps + 1, FLAGS.action_dim))
         x_joint, actions = sess.run([x_joint, actions_tensor], {X_START: x_start, X_END: x_end, X_PLAN: x_plan, ACTION_PLAN: actions})
     else:
         x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan})[0]
@@ -323,16 +328,18 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train):
         plt.tight_layout()
         plt.savefig(save_dir)
 
-    elif FLAGS.datasource == "pusher":
+    elif FLAGS.datasource == "reacher":
     # Generate 2D Videos of Particles Moving
         dats = x_joint[0]
+        dats = dats * std + mean
         env = gym.make("Reacher-v2")
         sim = env.sim
         ims = []
 
         for i in range(dats.shape[0]):
             state = dats[i]
-            sim.data.qpos[:] = state
+            sim.data.qpos[:2] = state[0, :2]
+            sim.forward()
             im = sim.render(256, 256)
             ims.append(im)
 
@@ -366,7 +373,7 @@ def debug(target_vars, sess):
     plt.savefig("cmap.png")
 
 
-def get_avg_step_num(target_vars, sess):
+def get_avg_step_num(target_vars, sess, mean, std):
     step_num = []
     n_exp = FLAGS.n_benchmark_exp
     plan_steps = FLAGS.plan_steps
@@ -380,9 +387,14 @@ def get_avg_step_num(target_vars, sess):
         X_PLAN = target_vars['X_PLAN']
         x_joint = target_vars['x_joint']
 
-        x_start = np.array(start_arr)[None, None, None, :]
-        x_end = np.array(end_arr)[None, None, None, :]
-        x_plan = np.random.uniform(-1, 1, (1, plan_steps, 1, 2))
+        if FLAGS.datasource == "reacher":
+            x_start = np.array(start_arr)[None, None, None, :]
+            x_end = np.array(end_arr)[None, None, None, :]
+            x_plan = np.random.uniform(-1, 1, (1, plan_steps, 1, FLAGS.latent_dim))
+        else:
+            x_start = np.array(start_arr)[None, None, None, :]
+            x_end = np.array(end_arr)[None, None, None, :]
+            x_plan = np.random.uniform(-1, 1, (1, plan_steps, 1, FLAGS.latent_dim))
 
         if FLAGS.cond:
             ACTION_PLAN = target_vars['ACTION_PLAN']
@@ -485,16 +497,23 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
                 cum_energy = model.forward(x_temp, weights, action_label=ACTION_LABEL)
                 cum_energies.append(cum_energy)
 
+            if FLAGS.anneal:
+                anneal_val = tf.cast(counter, tf.float32) / FLAGS.num_steps
+            else:
+                anneal_val = 1
+
             cum_energies = tf.reduce_sum(tf.concat(cum_energies, axis=1), axis=1)
             x_grad = tf.gradients(cum_energies, [x_joint])[0]
-            x_joint = x_joint - FLAGS.step_lr * tf.cast(counter, tf.float32) / FLAGS.num_steps * x_grad
+            x_joint = x_joint - FLAGS.step_lr * anneal_val * x_grad
 
         # Reset the start and end states to be previous values
         x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps+1], X_END], axis=1)
         counter = counter + 1
 
         counter = tf.Print(counter, [tf.reduce_mean(cum_energies), tf.reduce_max(cum_energies), tf.reduce_min(cum_energies)])
-        x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
+
+        if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
+            x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
 
         return counter, x_joint
 
@@ -619,8 +638,8 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
 
             action_label = action_label - FLAGS.step_lr * action_grad
 
-        x_mod = tf.clip_by_value(x_mod, -1.2, 1.2)
-        action_label = tf.clip_by_value(action_label, -1.2, 1.2)
+        # x_mod = tf.clip_by_value(x_mod, -1.2, 1.2)
+        # action_label = tf.clip_by_value(action_label, -1.2, 1.2)
 
         counter = counter + 1
 
@@ -790,21 +809,29 @@ def main():
     if FLAGS.datasource == 'point':
         dataset = np.load('point.npz')['obs'][:, :, None, :]
         actions = np.load('point.npz')['action']
+        mean, std = 0, 1
     if FLAGS.datasource == 'maze':
         dataset = np.load('maze.npz')['obs'][:, :, None, :]
         actions = np.load('maze.npz')['action']
+        mean, std = 0, 1
     if FLAGS.datasource == "reacher":
         dataset = np.load('reacher.npz')['obs'][:, :, None, :]
         actions = np.load('reacher.npz')['action']
+        dones = np.load('reacher.npz')['action']
 
-        dataset = dataset / 55.
+        dataset[:, :, :, :2] = dataset[:, :, :, :2] % (2 * np.pi)
+        s = dataset.shape
 
-        # mean, std = dataset_flat.mean(axis=0), dataset_flat.std(axis=0)
-        # std = std + 1e-5
-        # dataset = (dataset - mean) / std
+        dataset_flat = dataset.reshape((-1, FLAGS.latent_dim))
+        # dataset = dataset / 55.
+        mean, std = dataset_flat.mean(axis=0), dataset_flat.std(axis=0)
+        std = std + 1e-5
+        dataset = (dataset - mean) / std
+        print(dataset.max(), dataset.min())
 
-        # print(dataset.max())
-        # print(dataset.min())
+        # For now a hacky way to deal with dones since each episode is always of length 50
+        dataset = np.concatenate([dataset[:, 49:99], dataset[:, [99] + list(range(49))]], axis=0)
+        actions = np.concatenate([actions[:, 49:99], actions[:, [99] + list(range(49))]], axis=0)
 
     # dataset_flat = dataset.reshape((-1, dataset.shape[-1]))
     split_idx = int(dataset.shape[0] * 0.9)
@@ -821,11 +848,11 @@ def main():
         train(target_vars, saver, sess, logger, dataset_train, actions_train, resume_itr)
 
     if FLAGS.n_benchmark_exp != 0:
-        get_avg_step_num(target_vars, sess)
+        get_avg_step_num(target_vars, sess, mean, std)
     elif FLAGS.debug:
         debug(target_vars, sess)
     else:
-        test(target_vars, saver, sess, logdir, dataset_test, actions_test, dataset_train)
+        test(target_vars, saver, sess, logdir, dataset_test, actions_test, dataset_train, mean, std)
 
 if __name__ == "__main__":
     main()

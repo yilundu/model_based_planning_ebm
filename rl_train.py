@@ -5,7 +5,7 @@ import tensorflow as tf
 import os.path as osp
 import os
 from envs import Point, Maze
-from utils import ReplayBuffer
+from utils import ReplayBuffer, parse_valid_obs
 
 from baselines.logger import TensorBoardOutputFormat
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
@@ -35,7 +35,8 @@ flags.DEFINE_integer('latent_dim', 24, 'Number of dimension encoding state of ob
 flags.DEFINE_integer('action_dim', 24, 'Number of dimension for encoding action of object')
 flags.DEFINE_integer('input_objects', 1, 'Number of objects to predict the trajectory of.')
 flags.DEFINE_bool('spec_norm', True, 'Whether to use spectral normalization on weights')
-flags.DEFINE_bool('fast_goal', True, 'Try to reach the goal quicly')
+flags.DEFINE_bool('fast_goal', False, 'Try to reach the goal quicly')
+flags.DEFINE_bool('v_penalty', True, 'Penalty for distance between two points')
 
 # EBM settings
 flags.DEFINE_integer('num_steps', 20, 'Steps of gradient descent for training')
@@ -44,6 +45,7 @@ flags.DEFINE_bool('replay_batch', True, 'Whether to use a replay buffer for samp
 flags.DEFINE_bool('cond', False, 'Whether to condition on actions')
 flags.DEFINE_integer('temperature', 1, 'Temperature for energy function')
 flags.DEFINE_bool('inverse_dynamics', True, 'Whether to train a inverse dynamics model')
+flags.DEFINE_bool('gt_inverse_dynamics', True, 'Whether to train a inverse dynamics model')
 flags.DEFINE_integer('num_plan_steps', 50, 'Steps of planning')
 
 # Settings for MCMC
@@ -91,8 +93,8 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
     log_output = [train_op, dyn_loss, dyn_dist, energy_pos, energy_neg, loss_ml, loss_total, x_grad, action_grad, x_mod]
 
     print(log_output)
-    replay_buffer = ReplayBuffer(100000)
-    pos_replay_buffer = ReplayBuffer(100000)
+    replay_buffer = ReplayBuffer(1000000)
+    pos_replay_buffer = ReplayBuffer(1000000)
 
     epinfos = []
     for itr in range(resume_iter, tot_iter):
@@ -106,23 +108,31 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
             print(x_traj[0])
 
         obs = [ob[:, 0, 0, :]]
+        dones = []
+        diffs = []
         for i in range(traj_actions.shape[1]):
             action = traj_actions[:, i]
-            ob, _, _, infos = env.step(action)
+            ob, _, done, infos = env.step(action)
+
+            if i == 0:
+                print(x_traj[0, 0], x_traj[0, 1], ob[0])
+
+
+            dones.append(done)
             obs.append(ob)
 
             for info in infos:
                 maybeepinfo = info.get('episode')
                 if maybeepinfo: epinfos.append(maybeepinfo)
 
+            diffs.append(np.abs(x_traj[:, i+1] - ob).mean())
+
         ob =  ob[:, None, None, :]
-
+        dones = np.array(dones).transpose()
         obs = np.stack(obs, axis=1)[:, :, None, :]
-        ob_pair = np.stack([obs[:, :-1], obs[:, 1:]], axis=2)
-        s = ob_pair.shape
-        ob_pair = ob_pair.reshape((s[0] * s[1], s[2], s[3], s[4]))
 
-        action = traj_actions.reshape((-1, FLAGS.action_dim))
+        action, ob_pair = parse_valid_obs(obs, traj_actions, dones)
+
 
         x_noise = np.stack([x_traj[:, :-1], x_traj[:, 1:]], axis=2)
         s = x_noise.shape
@@ -131,7 +141,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         s = action_noise_neg.shape
         action_noise_neg = action_noise_neg.reshape((s[0]*s[1], s[2]))
 
-        traj_action_encode = traj_actions.reshape((-1, 1, 1, FLAGS.action_dim))
+        traj_action_encode = action.reshape((-1, 1, 1, FLAGS.action_dim))
         encode_data = np.concatenate([ob_pair, np.tile(traj_action_encode, (1, FLAGS.total_frame, 1, 1))], axis=3)
         pos_replay_buffer.add(encode_data)
         if len(replay_buffer) > FLAGS.num_env * FLAGS.plan_steps:
@@ -148,7 +158,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         batch_size = x_noise_neg.shape[0]
         if FLAGS.replay_batch and len(replay_buffer) > batch_size:
             replay_batch = replay_buffer.sample(batch_size)
-            replay_mask = (np.random.uniform(0, 1, (batch_size)) > 0.01)
+            replay_mask = (np.random.uniform(0, 1, (batch_size)) > 0.5)
             feed_dict[X_NOISE][replay_mask] = replay_batch[replay_mask]
 
 
@@ -165,6 +175,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
             kvs['dyn_dist'] = np.abs(dyn_dist).mean()
             kvs['iter'] = itr
             kvs["train_episode_length_mean"] = safemean([epinfo['l'] for epinfo in epinfos])
+            kvs["diffs"] = diffs[-2]
 
             epinfos = []
 
@@ -208,7 +219,10 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, ta
             cum_energies = tf.Print(cum_energies, [cum_energies], message="energy")
 
         if FLAGS.fast_goal:
-            cum_energies = cum_energies + tf.reduce_mean(tf.square(x_joint - X_END))
+            cum_energies = cum_energies + tf.reduce_sum(tf.square(x_joint - X_END))
+
+        if FLAGS.v_penalty:
+            cum_energies = cum_energies + 0.001 * tf.reduce_sum(tf.square(x_joint[:, 1:] - x_joint[:, :-1]))
 
         x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
         x_joint = x_joint - FLAGS.step_lr  *  anneal_val * x_grad
@@ -224,6 +238,10 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, ta
         return counter, x_joint, actions
 
     steps, x_joint, actions = tf.while_loop(c, mcmc_step, (steps, x_joint, actions))
+
+    if FLAGS.gt_inverse_dynamics:
+        actions = tf.clip_by_value(20.0 * (x_joint[:, 1:, 0] - x_joint[:, :-1, 0]), -1.0, 1.0)
+
     target_vars['x_joint'] = x_joint
     target_vars['actions'] = actions
     target_vars['X_START'] = X_START
@@ -370,7 +388,7 @@ def main():
 
             # Make the environments non stoppable for now
             if datasource == "maze":
-                env = Maze(end=[1.2, 1.2], start=[-0.85, -0.85])
+                env = Maze(end=[0.7, -0.8], start=[-0.85, -0.85], random_starts=False)
             elif datasource == "point":
                 env = Point(end=[0.5, 0.5], start=[0.0, 0.0], random_starts=True)
             env.seed(rank)
