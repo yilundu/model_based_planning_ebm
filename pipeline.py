@@ -108,6 +108,8 @@ flags.DEFINE_bool('debug', False, 'Print out energies when planning')
 flags.DEFINE_bool('gt_inverse_dynamics', True, 'Whether to train a inverse dynamics model')
 flags.DEFINE_bool('inverse_dynamics', False, 'Whether to train a inverse dynamics model')
 
+flags.DEFINE_bool('save_single', False, 'Save every single trajectory')
+
 FLAGS.batch_size *= FLAGS.num_gpus
 
 # set_seed(FLAGS.seed)
@@ -179,7 +181,7 @@ def get_avg_step_num(target_vars, sess, env):
                         kill = True
                         break
 
-                    if np.abs(target_obs - obs).mean() > 0.2:
+                    if np.abs(target_obs - obs).mean() > 0.15:
                         break
 
             else:
@@ -205,7 +207,7 @@ def get_avg_step_num(target_vars, sess, env):
             if kill:
                 break
 
-            if length > 2000:
+            if length > 10000:
                 break
 
         # log number of steps for each experiment
@@ -231,34 +233,43 @@ def get_avg_step_num(target_vars, sess, env):
     lengths = []
     for traj in collected_trajs:
         traj = traj.squeeze()
+        if traj.ndim == 1:
+            traj = np.expand_dims(traj, 0)
 
         # save one image for each trajectory
         timestamp = str(datetime.datetime.now())
-        save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}.png'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
-                                                                           FLAGS.resume_iter, timestamp))
-        plt.clf()
 
         if FLAGS.obstacle != None:
             xy = (FLAGS.obstacle[0], FLAGS.obstacle[-1])
             w, h = FLAGS.obstacle[2] - FLAGS.obstacle[0], FLAGS.obstacle[1] - FLAGS.obstacle[3]
 
-        # create a Rectangle patch as obstacle
-        if FLAGS.datasource == "point":
-            ax = plt.gca()   # get the current reference
-            rect = patches.Rectangle(xy, w, h, linewidth=1, edgecolor='r', facecolor='none')
-            ax.add_patch(rect)
-        elif FLAGS.datasource == "maze":
-            # Plot the values of boundaries of the maze
-            samples = np.random.uniform(-1, 1, (100000, 2))
-            ob_mask = ~is_maze_valid(samples)
-            walls = samples[ob_mask]
-            plt.plot(walls[:, 0], walls[:, 1], 'ko')
+            # create a Rectangle patch as obstacle
+            if FLAGS.datasource == "point":
+                ax = plt.gca()   # get the current reference
+                rect = patches.Rectangle(xy, w, h, linewidth=1, edgecolor='r', facecolor='none')
+                ax.add_patch(rect)
+            elif FLAGS.datasource == "maze":
+                # Plot the values of boundaries of the maze
+                samples = np.random.uniform(-1, 1, (100000, 2))
+                ob_mask = ~is_maze_valid(samples)
+                walls = samples[ob_mask]
+                plt.plot(walls[:, 0], walls[:, 1], 'ko')
 
         plt.plot(traj[:, 0], traj[:, 1])
-        plt.savefig(save_dir)
+
+        if FLAGS.save_single:
+            save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}.png'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
+                                                                               FLAGS.resume_iter, timestamp))
+            plt.savefig(save_dir)
+            plt.clf()
 
         # save all length for calculation of average length
         lengths.append(traj.shape[0])
+
+    if not FLAGS.save_single:
+        save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}.png'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
+                                                                           FLAGS.resume_iter, timestamp))
+        plt.savefig(save_dir)
 
     average_length = sum(lengths) / len(lengths)
     print("average number of steps:", average_length)
