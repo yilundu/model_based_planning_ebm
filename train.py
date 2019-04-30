@@ -92,6 +92,7 @@ flags.DEFINE_string('objective', 'cd', 'objective used to train EBM')
 # Parameters for Planning 
 flags.DEFINE_integer('plan_steps', 10, 'Number of steps of planning')
 flags.DEFINE_bool('seq_plan', False, 'Whether to use joint planning or sequential planning')
+flags.DEFINE_bool('velocity_penalty', True, 'Penalty for velocity')
 flags.DEFINE_bool('anneal', False, 'Whether to use simulated annealing for sampling')
 
 # Number of benchmark experiments
@@ -272,18 +273,20 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, s
         x_start = np.array([0.0, 0.0])[None, None, None, :]
         x_end = np.array([0.5, 0.5])[None, None, None, :]
     elif FLAGS.datasource == "maze":
-        x_start = np.array([0.1, 0.0])[None, None, None, :]
+        x_start = np.array([-0.85, -0.85])[None, None, None, :]
         x_end = np.array([0.7, -0.8])[None, None, None, :]
     elif FLAGS.datasource == "reacher":
         # x_start = (np.array([0.00895044, -0.02340578, 0.0, 0.0])[None, None, None, :] - mean) / std
         # x_start = (np.array([0.08984227,  0.06335336, 0.0, 0.0])[None, None, None, :] - mean) / std
-        x_start = data[1:2, 0:1]
+        n = 25
+        x_start = data[n:n+1, 3:4]
         # x_end = np.array([0.7, -0.8])[None, None, None, :]
-        x_end = data[1:2, FLAGS.plan_steps+1:FLAGS.plan_steps+2]
+        x_end = data[n:n+1, 3+FLAGS.plan_steps+1:3+FLAGS.plan_steps+2]
 
-    interp_weights = np.linspace(0, 1, FLAGS.plan_steps+2)[None, :, None, None]
-    x_plan = interp_weights * x_start + (1 - interp_weights) * x_end
-    x_plan = x_plan[:, 1:-1]
+    # interp_weights = np.linspace(0, 1, FLAGS.plan_steps+2)[None, :, None, None]
+    # x_plan = interp_weights * x_start + (1 - interp_weights) * x_end
+    # x_plan = x_plan[:, 1:-1]
+    x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, FLAGS.latent_dim))
 
     n = 1
 
@@ -503,6 +506,10 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
                 anneal_val = 1
 
             cum_energies = tf.reduce_sum(tf.concat(cum_energies, axis=1), axis=1)
+
+            if FLAGS.velocity_penalty:
+                cum_energies = cum_energies + 0.01 * tf.reduce_sum(tf.square(x_joint[:, 1:] - x_joint[:, :-1]))
+
             x_grad = tf.gradients(cum_energies, [x_joint])[0]
             x_joint = x_joint - FLAGS.step_lr * anneal_val * x_grad
 

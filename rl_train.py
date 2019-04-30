@@ -100,8 +100,14 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
     for itr in range(resume_iter, tot_iter):
         x_plan = np.random.uniform(-1, 1, (FLAGS.num_env, FLAGS.plan_steps, 1, 2))
         action_plan = np.random.uniform(-1, 1, (FLAGS.num_env, FLAGS.plan_steps + 1, 2))
-        x_end = np.tile(np.array([[0.5, 0.5]]), (FLAGS.num_env, 1))[:, None, None, :]
+        if FLAGS.datasource == "maze":
+            x_end = np.tile(np.array([[0.7, -0.8]]), (FLAGS.num_env, 1))[:, None, None, :]
+        else:
+            x_end = np.tile(np.array([[0.5, 0.5]]), (FLAGS.num_env, 1))[:, None, None, :]
         x_traj, traj_actions = sess.run([x_joint, actions], {X_START: ob, X_PLAN: x_plan, X_END: x_end, ACTION_PLAN: action_plan})
+
+        # Add some amount of exploration into predicted actions
+        # traj_actions = traj_actions + np.random.uniform(-0.1, 0.1, traj_actions.shape)
         traj_actions = np.clip(traj_actions, -1, 1)
 
         if FLAGS.debug:
@@ -116,6 +122,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
 
             if i == 0:
                 print(x_traj[0, 0], x_traj[0, 1], ob[0])
+                print(x_traj[0, :].max(), x_traj[0:, 1].min())
 
 
             dones.append(done)
@@ -144,7 +151,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         traj_action_encode = action.reshape((-1, 1, 1, FLAGS.action_dim))
         encode_data = np.concatenate([ob_pair, np.tile(traj_action_encode, (1, FLAGS.total_frame, 1, 1))], axis=3)
         pos_replay_buffer.add(encode_data)
-        if len(replay_buffer) > FLAGS.num_env * FLAGS.plan_steps:
+        if len(pos_replay_buffer) > FLAGS.num_env * FLAGS.plan_steps:
             sample_data = pos_replay_buffer.sample(FLAGS.num_env * FLAGS.plan_steps)
             sample_ob = sample_data[:, :, :, :-FLAGS.action_dim]
             sample_actions = sample_data[:, 0, 0, -FLAGS.action_dim:]
@@ -158,7 +165,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         batch_size = x_noise_neg.shape[0]
         if FLAGS.replay_batch and len(replay_buffer) > batch_size:
             replay_batch = replay_buffer.sample(batch_size)
-            replay_mask = (np.random.uniform(0, 1, (batch_size)) > 0.5)
+            replay_mask = (np.random.uniform(0, 1, (batch_size)) > 0.99)
             feed_dict[X_NOISE][replay_mask] = replay_batch[replay_mask]
 
 
@@ -175,7 +182,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
             kvs['dyn_dist'] = np.abs(dyn_dist).mean()
             kvs['iter'] = itr
             kvs["train_episode_length_mean"] = safemean([epinfo['l'] for epinfo in epinfos])
-            kvs["diffs"] = diffs[-2]
+            kvs["diffs"] = diffs[-1]
 
             epinfos = []
 
@@ -197,7 +204,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
 
 def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, target_vars={}):
     actions = ACTION_PLAN
-    x_joint = tf.concat([X_START, X_PLAN, X_END], axis=1)
+    x_joint = tf.concat([X_START, X_PLAN], axis=1)
     steps = tf.constant(0)
     c = lambda i, x, y: tf.less(i, FLAGS.num_plan_steps)
 
@@ -206,7 +213,7 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, ta
             actions = actions + tf.random_normal(tf.shape(actions), mean=0.0, stddev=0.01)
         x_joint = x_joint + tf.random_normal(tf.shape(x_joint), mean=0.0, stddev=0.01)
         cum_energies = 0
-        for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
+        for i in range(FLAGS.plan_steps - FLAGS.total_frame + 2):
             cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=actions[:, i])
             cum_energies = cum_energies + cum_energy
 
@@ -222,11 +229,13 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, ta
             cum_energies = cum_energies + tf.reduce_sum(tf.square(x_joint - X_END))
 
         if FLAGS.v_penalty:
-            cum_energies = cum_energies + 0.001 * tf.reduce_sum(tf.square(x_joint[:, 1:] - x_joint[:, :-1]))
+            cum_energies = cum_energies + 0.1 * tf.reduce_mean(tf.square(x_joint[:, 1:] - x_joint[:, :-1]))
+
+        cum_energies = cum_energies + 1e-3 * tf.reduce_sum(tf.abs(x_joint[:, -1:] - X_END))
 
         x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
         x_joint = x_joint - FLAGS.step_lr  *  anneal_val * x_grad
-        x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
+        x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps+1]], axis=1)
         x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
 
         if FLAGS.cond:
@@ -413,7 +422,7 @@ def main():
         X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
 
     weights = model.construct_weights(action_size=FLAGS.action_dim)
-    optimizer = AdamOptimizer(1e-3, beta1=0.0, beta2=0.999)
+    optimizer = AdamOptimizer(1e-2, beta1=0.0, beta2=0.999)
     target_vars = construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, optimizer)
     target_vars = construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, target_vars=target_vars)
 

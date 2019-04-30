@@ -105,6 +105,8 @@ flags.DEFINE_bool('constraint_vel', False, 'A distance constraint between each s
 flags.DEFINE_bool('constraint_goal', False, 'A distance constraint between current state and goal state')
 
 flags.DEFINE_bool('debug', False, 'Print out energies when planning')
+flags.DEFINE_bool('gt_inverse_dynamics', True, 'Whether to train a inverse dynamics model')
+flags.DEFINE_bool('inverse_dynamics', False, 'Whether to train a inverse dynamics model')
 
 FLAGS.batch_size *= FLAGS.num_gpus
 
@@ -158,7 +160,7 @@ def get_avg_step_num(target_vars, sess, env):
             else:
                 x_joint, output_actions = sess.run([x_joint, output_actions],
                                                    {X_START: x_start, X_END: x_end, X_PLAN: x_plan})
-                output_actions = output_actions[None, :, :]
+                # output_actions = output_actions[None, :, :]
 
             kill = False
 
@@ -263,12 +265,10 @@ def get_avg_step_num(target_vars, sess, env):
 
 
 def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL):
-    x_joint = tf.concat([X_START, X_PLAN, X_END], axis=1)
+    x_joint = tf.concat([X_START, X_PLAN], axis=1)
     steps = tf.constant(0)
     c = lambda i, x: tf.less(i, FLAGS.num_steps)
 
-    idyn_model = TrajInverseDynamics()
-    weights = idyn_model.construct_weights(scope="inverse_dynamics", weights=weights)
 
     def mcmc_step(counter, x_joint):
         cum_energies = 0
@@ -286,7 +286,10 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
         cum_energies = []
 
         if FLAGS.seq_plan:
-            for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
+            # Sequential planning is  missing a goal specification right now
+            assert False
+
+            for i in range(FLAGS.plan_steps - FLAGS.total_frame + 2):
                 x_temp = x_joint[:, i:i + FLAGS.total_frame]
                 x_temp = x_temp + tf.random_normal(tf.shape(x_temp), mean=0.0, stddev=0.1)
                 cum_energy = model.forward(x_temp, weights, action_label=ACTION_LABEL)
@@ -298,9 +301,9 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
 
                 cum_energies.append(cum_energy)
 
-            x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
+            x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1]], axis=1)
 
-            for i in range(FLAGS.plan_steps - FLAGS.total_frame + 2, -1):
+            for i in range(FLAGS.plan_steps - FLAGS.total_frame + 1, -1):
                 x_temp = x_joint[:, i:i + FLAGS.total_frame]
                 x_temp = x_temp + tf.random_normal(tf.shape(x_temp), mean=0.0, stddev=0.1)
                 cum_energy = model.forward(x_temp, weights, action_label=ACTION_LABEL)
@@ -315,7 +318,7 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
             cum_energies = tf.concat(cum_energies, axis=1)
         else:
             x_joint = x_joint + tf.random_normal(tf.shape(x_joint), mean=0.0, stddev=0.01)
-            for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
+            for i in range(FLAGS.plan_steps - FLAGS.total_frame + 2):
                 x_temp = x_joint[:, i:i + FLAGS.total_frame]
                 cum_energy = model.forward(x_temp, weights, action_label=ACTION_LABEL)
                 cum_energies.append(cum_energy)
@@ -326,18 +329,20 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
                 cum_energies = tf.Print(cum_energies, [tf.reduce_mean(cum_energies)])
 
             if FLAGS.constraint_vel:
-                v = tf.reduce_sum(tf.square((x_joint[:, 1:] - x_joint[:, :-1])))
-                cum_energies += v
+                cum_energies = cum_energies + 0.1 * tf.reduce_sum(tf.square((x_joint[:, 1:] - x_joint[:, :-1])))
 
             if FLAGS.constraint_goal:
                 d = tf.reduce_sum(tf.square(x_joint - X_END))
-                cum_energies += d
+                cum_energies =  cum_energies + d
+
+            # TODO change to be the appropriate weight for distance to goal
+            cum_energies = cum_energies + 1e-3 * tf.reduce_sum(tf.abs(x_joint[:, -1:] - X_END))
 
             x_grad = tf.gradients(cum_energies, [x_joint])[0]
             x_joint = x_joint - FLAGS.step_lr * tf.cast(counter, tf.float32) / FLAGS.num_steps * x_grad
 
         # Reset the start and end states to be previous values
-        x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
+        x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1]], axis=1)
         counter = counter + 1
 
         # counter = tf.Print(counter,
@@ -347,9 +352,17 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
         return counter, x_joint
 
     steps, x_joint = tf.while_loop(c, mcmc_step, (steps, x_joint))
-    pair_states = tf.concat([x_joint[:, i:i+2] for i in range(FLAGS.plan_steps+1)], axis=0)
+    print("X_joint shape ", x_joint.get_shape())
 
-    actions = idyn_model.forward(pair_states, weights)
+    if FLAGS.gt_inverse_dynamics:
+        actions = tf.clip_by_value(20.0 * (x_joint[:, 1:, 0] - x_joint[:, :-1, 0]), -1.0, 1.0)
+    elif FLAGS.inverse_dynamics:
+        idyn_model = TrajInverseDynamics()
+        weights = idyn_model.construct_weights(scope="inverse_dynamics", weights=weights)
+        pair_states = tf.concat([x_joint[:, i:i+2] for i in range(FLAGS.plan_steps+1)], axis=0)
+        actions = idyn_model.forward(pair_states, weights)
+
+    print("actions shape ", actions.get_shape())
     target_vars = {}
 
     target_vars['actions'] = actions
@@ -364,7 +377,7 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
 
 def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN):
     actions = ACTION_PLAN
-    x_joint = tf.concat([X_START, X_PLAN, X_END], axis=1)
+    x_joint = tf.concat([X_START, X_PLAN], axis=1)
     steps = tf.constant(0)
     c = lambda i, x, y: tf.less(i, FLAGS.num_steps)
 
@@ -388,12 +401,15 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
         anneal_const = tf.cast(counter, tf.float32) / FLAGS.num_steps
 
         if FLAGS.constraint_vel:
-            v = tf.reduce_sum(tf.square((x_joint[:, 1:] - x_joint[:, :-1])))
+            v = 0.01 * tf.reduce_sum(tf.square((x_joint[:, 1:] - x_joint[:, :-1])))
             cum_energies += v
 
         if FLAGS.constraint_goal:
             d = tf.reduce_sum(tf.square(x_joint - X_END))
             cum_energies += d
+
+        # TODO change to be the appropriate weight for distance to goal
+        cum_energies = cum_energies + 1e-3 * tf.reduce_sum(tf.abs(x_joint[:, -1:] - X_END))
 
         x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
         x_joint = x_joint - FLAGS.step_lr * anneal_const * x_grad
@@ -465,7 +481,8 @@ def main():
     if FLAGS.datasource == 'point':
         env = Point(start_arr, end_arr, FLAGS.eps, FLAGS.obstacle)
     elif FLAGS.datasource == 'maze':
-        env = Maze([0.1, 0.0], [0.7, -0.8], FLAGS.eps, FLAGS.obstacle)
+        # env = Maze([0.1, 0.0], [0.7, -0.8], FLAGS.eps, FLAGS.obstacle)
+        env = Maze([-0.85, -0.85], [0.7, -0.8], FLAGS.eps, FLAGS.obstacle)
     else:
         raise KeyError
 
