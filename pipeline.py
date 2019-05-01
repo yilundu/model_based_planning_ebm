@@ -266,12 +266,13 @@ def get_avg_step_num(target_vars, sess, env):
         lengths.append(traj.shape[0])
 
     if not FLAGS.save_single:
-        save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}.png'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
+        save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
                                                                            FLAGS.resume_iter, timestamp))
         if FLAGS.constraint_vel:
             save_dir += "_vel"
         if FLAGS.constraint_goal:
             save_dir += "_goal"
+        save_dir += ".png"
 
         plt.savefig(save_dir)
         plt.clf()
