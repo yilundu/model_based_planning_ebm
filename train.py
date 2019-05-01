@@ -585,9 +585,9 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
 		dyn_model = TrajInverseDynamics()
 		weights = dyn_model.construct_weights(scope="inverse_dynamics", weights=weights)
 
-		if FLAGS.ff_model:
-			ff_model = TrajFFDynamics()
-			weights = ff_model.construct_weights(scope="ff_model", weights=weights)
+	if FLAGS.ff_model:
+		ff_model = TrajFFDynamics()
+		weights = ff_model.construct_weights(scope="ff_model", weights=weights)
 
 	steps = tf.constant(0)
 	c = lambda i, x, y: tf.less(i, FLAGS.num_steps)
