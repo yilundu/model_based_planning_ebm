@@ -255,11 +255,10 @@ def get_avg_step_num(target_vars, sess, env):
                 walls = samples[ob_mask]
                 plt.plot(walls[:, 0], walls[:, 1], 'ko')
 
-        plt.plot(traj[:, 0], traj[:, 1])
+        plt.plot(traj[:, 0], traj[:, 1], color='green', alpha=0.3)
 
         if FLAGS.save_single:
-            save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}.png'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
-                                                                               FLAGS.resume_iter, timestamp))
+            save_dir = osp.join(imgdir, 'test_{}_iter{}_{}.png'.format(FLAGS.exp, FLAGS.resume_iter, timestamp))
             plt.savefig(save_dir)
             plt.clf()
 
@@ -269,7 +268,13 @@ def get_avg_step_num(target_vars, sess, env):
     if not FLAGS.save_single:
         save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}.png'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
                                                                            FLAGS.resume_iter, timestamp))
+        if FLAGS.constraint_vel:
+            save_dir += "_vel"
+        if FLAGS.constraint_goal:
+            save_dir += "_goal"
+
         plt.savefig(save_dir)
+        plt.clf()
 
     average_length = sum(lengths) / len(lengths)
     print("average number of steps:", average_length)
@@ -345,7 +350,7 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
 
             if FLAGS.constraint_goal:
                 # TODO: change to be the appropriate weight
-                d = 0.01 * tf.reduce_sum(tf.square(x_joint - X_END))
+                d = 0.1 * tf.reduce_sum(tf.square(x_joint - X_END))
                 cum_energies += d
 
             # TODO change to be the appropriate weight for distance to goal
