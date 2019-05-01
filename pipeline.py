@@ -280,7 +280,6 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
     steps = tf.constant(0)
     c = lambda i, x: tf.less(i, FLAGS.num_steps)
 
-
     def mcmc_step(counter, x_joint):
         cum_energies = 0
 
@@ -340,13 +339,17 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
                 cum_energies = tf.Print(cum_energies, [tf.reduce_mean(cum_energies)])
 
             if FLAGS.constraint_vel:
-                cum_energies = cum_energies + 0.1 * tf.reduce_sum(tf.square((x_joint[:, 1:] - x_joint[:, :-1])))
+                # TODO: change to be the appropriate weight
+                v = 0.1 * tf.reduce_sum(tf.square((x_joint[:, 1:] - x_joint[:, :-1])))
+                cum_energies += v
 
             if FLAGS.constraint_goal:
-                d = tf.reduce_sum(tf.square(x_joint - X_END))
-                cum_energies =  cum_energies + d
+                # TODO: change to be the appropriate weight
+                d = 0.01 * tf.reduce_sum(tf.square(x_joint - X_END))
+                cum_energies += d
 
             # TODO change to be the appropriate weight for distance to goal
+            # L2 distance goal specification
             cum_energies = cum_energies + 1e-3 * tf.reduce_sum(tf.abs(x_joint[:, -1:] - X_END))
 
             x_grad = tf.gradients(cum_energies, [x_joint])[0]
@@ -356,9 +359,8 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
         x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1]], axis=1)
         counter = counter + 1
 
-        # counter = tf.Print(counter,
-        #                    [tf.reduce_mean(cum_energies), tf.reduce_max(cum_energies), tf.reduce_min(cum_energies)])
-        x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
+        if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
+            x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
 
         return counter, x_joint
 

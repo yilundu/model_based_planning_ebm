@@ -1,0 +1,10 @@
+.DS_Store
+.idea/
+__pycache__/
+cachedir/
+get_avg_step_num_log_*
+maze.*
+point.*
+rollout_images*/
+*.sh
+trajs.png
