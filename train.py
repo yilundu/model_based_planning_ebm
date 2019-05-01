@@ -1,11 +1,10 @@
 import datetime
-import gym
 import os
 import os.path as osp
 import random
-from gen_data import is_maze_valid
-import imageio
 
+import gym
+import imageio
 import matplotlib as mpl
 import matplotlib.patches as patches
 import tensorflow as tf
@@ -13,7 +12,7 @@ import tensorflow as tf
 from baselines.logger import TensorBoardOutputFormat
 from tensorflow.python.platform import flags
 
-from traj_model import TrajNetLatentFC, TrajInverseDynamics
+from traj_model import TrajFFDynamics, TrajInverseDynamics, TrajNetLatentFC
 
 mpl.use('Agg')
 import matplotlib.pyplot as plt
@@ -23,7 +22,7 @@ import numpy as np
 from itertools import product
 from custom_adam import AdamOptimizer
 # from render_utils import render_reach
-from utils import ReplayBuffer, parse_valid_obs
+from utils import ReplayBuffer
 import seaborn as sns
 
 sns.set()
@@ -94,6 +93,9 @@ flags.DEFINE_integer('plan_steps', 10, 'Number of steps of planning')
 flags.DEFINE_bool('seq_plan', False, 'Whether to use joint planning or sequential planning')
 flags.DEFINE_bool('constraint_vel', False, 'A distance constraint between each subsequent state')
 flags.DEFINE_bool('anneal', False, 'Whether to use simulated annealing for sampling')
+
+# use FF to train forward prediction rather than EBM
+flags.DEFINE_bool('ff_model', False, 'Run action conditional with a deterministic FF network')
 
 flags.DEFINE_integer('n_exp', 1, 'Number of tests run')
 
@@ -259,6 +261,7 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
 
     saver.save(sess, osp.join(FLAGS.logdir, FLAGS.exp, 'model_{}'.format(itr)))
 
+
 def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, std):
     X_START = target_vars['X_START']
     X_END = target_vars['X_END']
@@ -314,8 +317,8 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, s
             x, y = zip(*list(x_joint_i.squeeze()))
             xs.append(x)
             ys.append(y)
-            # plt.plot(x, y, color='blue', alpha=0.1)
-        sns.jointplot(x=xs, y=ys)
+            plt.plot(x, y, color='blue', alpha=0.1)
+        # sns.jointplot(x=xs, y=ys)
 
         if FLAGS.datasource == "maze":
             ax = plt.gca()
@@ -330,8 +333,8 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, s
 
         save_dir = osp.join(imgdir, 'test_exp_{}_iter{}_{}.png'.format(FLAGS.exp, FLAGS.resume_iter, timestamp))
         # plt.tight_layout()
-        # plt.xlim(x_start0-0.5, x_end0+0.2)
-        # plt.ylim(x_start1-0.5, x_end1+0.2)
+        plt.xlim(x_start0-0.5, x_end0+0.2)
+        plt.ylim(x_start1-0.5, x_end1+0.2)
         plt.title("Plan steps = {}".format(FLAGS.plan_steps))
         plt.savefig(save_dir)
 
@@ -506,6 +509,51 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
     return target_vars
 
 
+def construct_cond_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN):
+    actions = ACTION_PLAN
+    x_joint = tf.concat([X_START, X_PLAN, X_END], axis=1)
+    steps = tf.constant(0)
+    c = lambda i, x, y: tf.less(i, FLAGS.num_steps)
+
+    def mcmc_step(counter, x_joint, actions):
+        actions = actions + tf.random_normal(tf.shape(actions), mean=0.0, stddev=0.01)
+        x_joint = x_joint + tf.random_normal(tf.shape(x_joint), mean=0.0, stddev=0.01)
+        cum_energies = 0
+        for i in range(FLAGS.plan_steps + 2):
+            cum_energy = model.forward(x_joint[:, i], weights, action_label=actions[:, i])
+            cum_energies = cum_energies + cum_energy
+
+        cum_energies = tf.Print(cum_energies, [cum_energies], message="energies")
+
+        if FLAGS.anneal:
+            anneal_val = tf.cast(counter, tf.float32) / FLAGS.num_steps
+        else:
+            anneal_val = 1
+
+        x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
+        x_joint = x_joint - FLAGS.step_lr * anneal_val * x_grad
+        x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
+        x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
+
+        actions = actions - FLAGS.step_lr * anneal_val * action_grad
+        actions = tf.clip_by_value(actions, -1.0, 1.0)
+
+        counter = counter + 1
+
+        return counter, x_joint, actions
+
+    steps, x_joint, actions = tf.while_loop(c, mcmc_step, (steps, x_joint, actions))
+    target_vars = {}
+    target_vars['x_joint'] = x_joint
+    target_vars['actions'] = actions
+    target_vars['X_START'] = X_START
+    target_vars['X_END'] = X_END
+    target_vars['X_PLAN'] = X_PLAN
+    target_vars['ACTION_PLAN'] = ACTION_PLAN
+
+    return target_vars
+
+
 def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, LR, optimizer):
     target_vars = {}
     x_mods = []
@@ -524,6 +572,10 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
     if FLAGS.inverse_dynamics:
         dyn_model = TrajInverseDynamics()
         weights = dyn_model.construct_weights(scope="inverse_dynamics", weights=weights)
+
+	if FLAGS.ff_model:
+		ff_model = TrajFFDynamics()
+		weights = ff_model.construct_weights(scope="ff_model", weights=weights)
 
     steps = tf.constant(0)
     c = lambda i, x, y: tf.less(i, FLAGS.num_steps)
@@ -636,6 +688,19 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
         dyn_optimizer = AdamOptimizer(1e-3)
         gvs = dyn_optimizer.compute_gradients(dyn_loss)
         dyn_train_op = dyn_optimizer.apply_gradients(gvs)
+
+    elif FLAGS.ff_model:
+	    X_LABEL = X[:, -1]
+	    output_x = ff_model.forward(X, weights)
+	    ff_loss = tf.reduce_mean(tf.square(output_x - X_LABEL))
+	    ff_dist = tf.reduce_mean(tf.abs(output_x - X_LABEL))
+	    target_vars['ff_loss'] = ff_loss
+	    target_vars['ff_dist'] = ff_dist
+
+	    ff_optimizer = AdamOptimizer(1e-3)
+	    gvs = ff_optimizer.compute_gradients(ff_loss)
+	    ff_train_op = ff_optimizer.apply_gradients(gvs)
+
     else:
         target_vars['dyn_loss'] = tf.zeros(1)
         target_vars['dyn_dist'] = tf.zeros(1)
@@ -656,6 +721,8 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
 
         if FLAGS.inverse_dynamics:
             train_op = tf.group(train_op, dyn_train_op)
+	    if FLAGS.ff_model:
+		    train_op = tf.group(train_op, ff_train_op)
 
         target_vars['train_op'] = train_op
 
@@ -714,7 +781,10 @@ def main():
         if not FLAGS.cond:
             target_vars = construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL)
         else:
-            target_vars = construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN)
+	        if FLAGS.ff_model:
+		        target_vars = construct_cond_ff_plan_model((model, weights, X_PLAN, X_START, X_END, ACTION_PLAN)
+		    else:
+		        target_vars = construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN)
 
     sess = tf.InteractiveSession()
     saver = tf.train.Saver(max_to_keep=10, keep_checkpoint_every_n_hours=2)
