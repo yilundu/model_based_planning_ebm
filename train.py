@@ -92,7 +92,7 @@ flags.DEFINE_string('objective', 'cd', 'objective used to train EBM')
 # Parameters for Planning 
 flags.DEFINE_integer('plan_steps', 10, 'Number of steps of planning')
 flags.DEFINE_bool('seq_plan', False, 'Whether to use joint planning or sequential planning')
-flags.DEFINE_bool('velocity_penalty', True, 'Penalty for velocity')
+flags.DEFINE_bool('constraint_vel', False, 'A distance constraint between each subsequent state')
 flags.DEFINE_bool('anneal', False, 'Whether to use simulated annealing for sampling')
 
 flags.DEFINE_integer('n_exp', 1, 'Number of tests run')
@@ -266,9 +266,12 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, s
     x_joint = target_vars['x_joint']
 
     n = FLAGS.n_exp
+
     if FLAGS.datasource == "point":
-        x_start = np.array([0.0, 0.0])[None, None, None, :]
-        x_end = np.array([0.5, 0.5])[None, None, None, :]
+        x_start0, x_start1 = 0.0, 0.0
+        x_end0, x_end1 = 1.0, 1.0
+        x_start = np.array([x_start0, x_start1])[None, None, None, :]
+        x_end = np.array([x_end0, x_end1])[None, None, None, :]
     elif FLAGS.datasource == "maze":
         x_start = np.array([-0.85, -0.85])[None, None, None, :]
         x_end = np.array([0.7, -0.8])[None, None, None, :]
@@ -283,9 +286,6 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, s
     # interp_weights = np.linspace(0, 1, FLAGS.plan_steps+2)[None, :, None, None]
     # x_plan = interp_weights * x_start + (1 - interp_weights) * x_end
     # x_plan = x_plan[:, 1:-1]
-    x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, FLAGS.latent_dim))
-
-    n = FLAGS.n_exp
 
     x_plan = np.random.uniform(-1, 1, (FLAGS.n_exp, FLAGS.plan_steps, 1, FLAGS.latent_dim))
     x_start, x_end, x_plan = np.tile(x_start, (n, 1, 1, 1)), np.tile(x_end, (n, 1, 1, 1)), x_plan
@@ -311,7 +311,7 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, s
         for i in range(n):
             x_joint_i = x_joint[i]
             x, y = zip(*list(x_joint_i.squeeze()))
-            plt.plot(x, y)
+            plt.plot(x, y, color='blue', alpha=0.1)
 
         if FLAGS.datasource == "maze":
             ax = plt.gca()
@@ -324,9 +324,11 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, s
             rect = patches.Rectangle((0.75, -0.75), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
             ax.add_patch(rect)
 
-
         save_dir = osp.join(imgdir, 'test_exp_{}_iter{}_{}.png'.format(FLAGS.exp, FLAGS.resume_iter, timestamp))
-        plt.tight_layout()
+        # plt.tight_layout()
+        plt.xlim(x_start0-0.5, x_end0+0.2)
+        plt.ylim(x_start1-0.5, x_end1+0.2)
+        plt.title("Plan steps = {}".format(FLAGS.plan_steps))
         plt.savefig(save_dir)
 
     elif FLAGS.datasource == "reacher":
@@ -427,8 +429,8 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
 
             cum_energies = tf.reduce_sum(tf.concat(cum_energies, axis=1), axis=1)
 
-            if FLAGS.velocity_penalty:
-                cum_energies = cum_energies + 0.01 * tf.reduce_sum(tf.square(x_joint[:, 1:] - x_joint[:, :-1]))
+            if FLAGS.constraint_vel:
+                cum_energies = cum_energies + 0.0001 * tf.reduce_sum(tf.square(x_joint[:, 1:] - x_joint[:, :-1]))
 
             x_grad = tf.gradients(cum_energies, [x_joint])[0]
             x_joint = x_joint - FLAGS.step_lr * anneal_val * x_grad
