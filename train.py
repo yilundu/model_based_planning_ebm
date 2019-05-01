@@ -308,10 +308,14 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, s
 
     # Generate 2D plots of particle movement in the environment
     if FLAGS.datasource == "point" or FLAGS.datasource == "maze":
+        xs, ys = [], []
         for i in range(n):
             x_joint_i = x_joint[i]
             x, y = zip(*list(x_joint_i.squeeze()))
-            plt.plot(x, y, color='blue', alpha=0.1)
+            xs.append(x)
+            ys.append(y)
+            # plt.plot(x, y, color='blue', alpha=0.1)
+        sns.jointplot(x=xs, y=ys)
 
         if FLAGS.datasource == "maze":
             ax = plt.gca()
@@ -326,8 +330,8 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, s
 
         save_dir = osp.join(imgdir, 'test_exp_{}_iter{}_{}.png'.format(FLAGS.exp, FLAGS.resume_iter, timestamp))
         # plt.tight_layout()
-        plt.xlim(x_start0-0.5, x_end0+0.2)
-        plt.ylim(x_start1-0.5, x_end1+0.2)
+        # plt.xlim(x_start0-0.5, x_end0+0.2)
+        # plt.ylim(x_start1-0.5, x_end1+0.2)
         plt.title("Plan steps = {}".format(FLAGS.plan_steps))
         plt.savefig(save_dir)
 
@@ -479,7 +483,6 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
             anneal_val = 1
 
         x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
-        # action_grad = tf.Print(action_grad, [action_grad], message="action grads")
         x_joint = x_joint - FLAGS.step_lr * anneal_val * x_grad
         x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
         x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
