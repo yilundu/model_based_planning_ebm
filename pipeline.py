@@ -349,6 +349,10 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
                 d = 0.01 * tf.reduce_sum(tf.square(x_joint[:, -1:] - X_END))
                 cum_energies += d
 
+            # TODO change to be the appropriate weight for distance to goal
+            # L2 distance goal specification
+            cum_energies = cum_energies + 1e-3 * tf.reduce_sum(tf.abs(x_joint[:, -1:] - X_END))
+
             x_grad = tf.gradients(cum_energies, [x_joint])[0]
             x_joint = x_joint - FLAGS.step_lr * tf.cast(counter, tf.float32) / FLAGS.num_steps * x_grad
 
