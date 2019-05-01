@@ -346,7 +346,7 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
 
             if FLAGS.constraint_goal:
                 # TODO: change to be the appropriate weight
-                d = 0.01 * tf.reduce_sum(tf.square(x_joint[:, -1:] - X_END))
+                d = 0.01 * tf.reduce_sum(tf.square(x_joint - X_END))
                 cum_energies += d
 
             # TODO change to be the appropriate weight for distance to goal
