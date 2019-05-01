@@ -13,6 +13,8 @@ from tensorflow.python.platform import flags
 from traj_model import TrajNetLatentFC, TrajInverseDynamics
 from custom_adam import AdamOptimizer
 from baselines.bench import Monitor
+import seaborn as sns
+import  matplotlib.pyplot as plt
 
 FLAGS = flags.FLAGS
 
@@ -28,6 +30,7 @@ flags.DEFINE_integer('log_interval', 10, 'interval to log values')
 flags.DEFINE_integer('resume_iter', -1, 'iteration to resume training from')
 flags.DEFINE_float('lr', 1e-3, 'Learning for training')
 flags.DEFINE_integer('seed', 0, 'Value of seed')
+flags.DEFINE_bool('heatmap', False, 'Visualize the heatmap in environments')
 
 # Architecture Settings
 flags.DEFINE_integer('num_filters', 64, 'number of filters for networks')
@@ -97,6 +100,8 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
     pos_replay_buffer = ReplayBuffer(1000000)
 
     epinfos = []
+    points = []
+    total_obs = []
     for itr in range(resume_iter, tot_iter):
         x_plan = np.random.uniform(-1, 1, (FLAGS.num_env, FLAGS.plan_steps, 1, 2))
         action_plan = np.random.uniform(-1, 1, (FLAGS.num_env, FLAGS.plan_steps + 1, 2))
@@ -118,6 +123,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         diffs = []
         for i in range(traj_actions.shape[1]):
             action = traj_actions[:, i]
+            # action = np.random.uniform(-1, 1, traj_actions[:, i].shape)
             ob, _, done, infos = env.step(action)
 
             if i == 0:
@@ -138,6 +144,9 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         dones = np.array(dones).transpose()
         obs = np.stack(obs, axis=1)[:, :, None, :]
 
+        if FLAGS.heatmap:
+            total_obs.append(obs.reshape((-1, FLAGS.latent_dim)))
+
         action, ob_pair = parse_valid_obs(obs, traj_actions, dones)
 
 
@@ -151,6 +160,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         traj_action_encode = action.reshape((-1, 1, 1, FLAGS.action_dim))
         encode_data = np.concatenate([ob_pair, np.tile(traj_action_encode, (1, FLAGS.total_frame, 1, 1))], axis=3)
         pos_replay_buffer.add(encode_data)
+
         if len(pos_replay_buffer) > FLAGS.num_env * FLAGS.plan_steps:
             sample_data = pos_replay_buffer.sample(FLAGS.num_env * FLAGS.plan_steps)
             sample_ob = sample_data[:, :, :, :-FLAGS.action_dim]
@@ -201,6 +211,13 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         if itr % FLAGS.save_interval == 0:
             saver.save(sess, osp.join(FLAGS.logdir, FLAGS.exp, 'model_{}'.format(itr)))
 
+        if FLAGS.heatmap and itr == 100:
+            total_obs = np.concatenate(total_obs, axis=0)
+            print(total_obs.shape)
+            sns.jointplot(x=total_obs[:, 0], y=total_obs[:, 1], kind="kde")
+            plt.savefig("kde.png")
+            assert False
+
 
 def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, target_vars={}):
     actions = ACTION_PLAN
@@ -231,7 +248,7 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, ta
         if FLAGS.v_penalty:
             cum_energies = cum_energies + 0.001 * tf.reduce_mean(tf.square(x_joint[:, 1:] - x_joint[:, :-1]))
 
-        cum_energies = cum_energies + 1e-5 * tf.reduce_sum(tf.abs(x_joint[:, -1:] - X_END))
+        # cum_energies = cum_energies + 1e-5 * tf.reduce_sum(tf.abs(x_joint[:, -1:] - X_END))
 
         x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
         x_joint = x_joint - FLAGS.step_lr  *  anneal_val * x_grad
