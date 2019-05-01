@@ -280,7 +280,6 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
     steps = tf.constant(0)
     c = lambda i, x: tf.less(i, FLAGS.num_steps)
 
-
     def mcmc_step(counter, x_joint):
         cum_energies = 0
 
@@ -360,9 +359,8 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
         x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1]], axis=1)
         counter = counter + 1
 
-        # counter = tf.Print(counter,
-        #                    [tf.reduce_mean(cum_energies), tf.reduce_max(cum_energies), tf.reduce_min(cum_energies)])
-        x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
+        if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
+            x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
 
         return counter, x_joint
 
