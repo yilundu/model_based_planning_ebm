@@ -424,7 +424,7 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
 
         x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
         x_joint = x_joint - FLAGS.step_lr * anneal_const * x_grad
-        x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
+        x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1]], axis=1)
         x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
 
         actions = actions - FLAGS.step_lr * anneal_const * action_grad

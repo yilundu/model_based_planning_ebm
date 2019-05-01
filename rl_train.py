@@ -229,9 +229,9 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, ta
             cum_energies = cum_energies + tf.reduce_sum(tf.square(x_joint - X_END))
 
         if FLAGS.v_penalty:
-            cum_energies = cum_energies + 0.1 * tf.reduce_mean(tf.square(x_joint[:, 1:] - x_joint[:, :-1]))
+            cum_energies = cum_energies + 0.001 * tf.reduce_mean(tf.square(x_joint[:, 1:] - x_joint[:, :-1]))
 
-        cum_energies = cum_energies + 1e-3 * tf.reduce_sum(tf.abs(x_joint[:, -1:] - X_END))
+        cum_energies = cum_energies + 1e-5 * tf.reduce_sum(tf.abs(x_joint[:, -1:] - X_END))
 
         x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
         x_joint = x_joint - FLAGS.step_lr  *  anneal_val * x_grad
