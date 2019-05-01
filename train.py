@@ -808,10 +808,11 @@ def main():
 	total_parameters = 0
 	for variable in tf.trainable_variables():
 		shape = variable.get_shape()
-	variable_parameters = 1
-	for dim in shape:
-		variable_parameters *= dim.value
-	total_parameters += variable_parameters
+		variable_parameters = 1
+		for dim in shape:
+			variable_parameters *= dim.value
+		total_parameters += variable_parameters
+
 	print("Model has a total of {} parameters".format(total_parameters))
 
 	tf.global_variables_initializer().run()
@@ -821,38 +822,38 @@ def main():
 
 	if FLAGS.resume_iter != -1 or not FLAGS.train:
 		model_file = osp.join(logdir, 'model_{}'.format(FLAGS.resume_iter))
-	resume_itr = FLAGS.resume_iter
-	saver.restore(sess, model_file)
+		resume_itr = FLAGS.resume_iter
+		saver.restore(sess, model_file)
 
 	if FLAGS.datasource == 'point':
 		dataset = np.load('point.npz')['obs'][:, :, None, :]
-	actions = np.load('point.npz')['action']
-	mean, std = 0, 1
+		actions = np.load('point.npz')['action']
+		mean, std = 0, 1
 	if FLAGS.datasource == 'maze':
 		dataset = np.load('maze.npz')['obs'][:, :, None, :]
-	actions = np.load('maze.npz')['action']
-	mean, std = 0, 1
+		actions = np.load('maze.npz')['action']
+		mean, std = 0, 1
 	if FLAGS.datasource == "reacher":
 		dataset = np.load('reacher.npz')['obs'][:, :, None, :]
-	actions = np.load('reacher.npz')['action']
-	dones = np.load('reacher.npz')['action']
+		actions = np.load('reacher.npz')['action']
+		dones = np.load('reacher.npz')['action']
 
-	dataset[:, :, :, :2] = dataset[:, :, :, :2] % (2 * np.pi)
-	s = dataset.shape
+		dataset[:, :, :, :2] = dataset[:, :, :, :2] % (2 * np.pi)
+		s = dataset.shape
 
-	dataset_flat = dataset.reshape((-1, FLAGS.latent_dim))
-	# dataset = dataset / 55.
-	mean, std = dataset_flat.mean(axis=0), dataset_flat.std(axis=0)
-	std = std + 1e-5
-	dataset = (dataset - mean) / std
-	print(dataset.max(), dataset.min())
+		dataset_flat = dataset.reshape((-1, FLAGS.latent_dim))
+		# dataset = dataset / 55.
+		mean, std = dataset_flat.mean(axis=0), dataset_flat.std(axis=0)
+		std = std + 1e-5
+		dataset = (dataset - mean) / std
+		print(dataset.max(), dataset.min())
 
-	# For now a hacky way to deal with dones since each episode is always of length 50
-	dataset = np.concatenate([dataset[:, 49:99], dataset[:, [99] + list(range(49))]], axis=0)
-	actions = np.concatenate([actions[:, 49:99], actions[:, [99] + list(range(49))]], axis=0)
+		# For now a hacky way to deal with dones since each episode is always of length 50
+		dataset = np.concatenate([dataset[:, 49:99], dataset[:, [99] + list(range(49))]], axis=0)
+		actions = np.concatenate([actions[:, 49:99], actions[:, [99] + list(range(49))]], axis=0)
 
-	# dataset_flat = dataset.reshape((-1, dataset.shape[-1]))
-	split_idx = int(dataset.shape[0] * 0.9)
+		# dataset_flat = dataset.reshape((-1, dataset.shape[-1]))
+		split_idx = int(dataset.shape[0] * 0.9)
 
 	dataset_train = dataset[:split_idx]
 	actions_train = actions[:split_idx]
@@ -870,5 +871,5 @@ def main():
 	else:
 		test(target_vars, saver, sess, logdir, dataset_test, actions_test, dataset_train, mean, std)
 
-	if __name__ == "__main__":
-		main()
+if __name__ == "__main__":
+	main()
