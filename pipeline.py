@@ -398,7 +398,7 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
         actions = actions + tf.random_normal(tf.shape(actions), mean=0.0, stddev=0.01)
         x_joint = x_joint + tf.random_normal(tf.shape(x_joint), mean=0.0, stddev=0.01)
         cum_energies = 0
-        for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
+        for i in range(FLAGS.plan_steps - FLAGS.total_frame + 2):
             cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=actions[:, i])
             cum_energies = cum_energies + cum_energy
 
