@@ -340,14 +340,14 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
                 cum_energies = tf.Print(cum_energies, [tf.reduce_mean(cum_energies)])
 
             if FLAGS.constraint_vel:
-                cum_energies = cum_energies + 0.1 * tf.reduce_sum(tf.square((x_joint[:, 1:] - x_joint[:, :-1])))
+                # TODO: change to be the appropriate weight
+                v = 0.1 * tf.reduce_sum(tf.square((x_joint[:, 1:] - x_joint[:, :-1])))
+                cum_energies += v
 
             if FLAGS.constraint_goal:
-                d = tf.reduce_sum(tf.square(x_joint - X_END))
-                cum_energies =  cum_energies + d
-
-            # TODO change to be the appropriate weight for distance to goal
-            cum_energies = cum_energies + 1e-3 * tf.reduce_sum(tf.abs(x_joint[:, -1:] - X_END))
+                # TODO: change to be the appropriate weight
+                d = 0.01 * tf.reduce_sum(tf.square(x_joint[:, -1:] - X_END))
+                cum_energies += d
 
             x_grad = tf.gradients(cum_energies, [x_joint])[0]
             x_joint = x_joint - FLAGS.step_lr * tf.cast(counter, tf.float32) / FLAGS.num_steps * x_grad

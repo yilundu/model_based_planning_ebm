@@ -174,6 +174,7 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
     dyn_dist = target_vars['dyn_dist']
     progress_diff = target_vars['progress_diff']
 
+    n = FLAGS.n_exp
     gvs_dict = dict(gvs)
 
     # remove gradient logging since it is slow
@@ -264,6 +265,7 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, s
     X_PLAN = target_vars['X_PLAN']
     x_joint = target_vars['x_joint']
 
+    n = FLAGS.n_exp
     if FLAGS.datasource == "point":
         x_start = np.array([0.0, 0.0])[None, None, None, :]
         x_end = np.array([0.5, 0.5])[None, None, None, :]
@@ -285,7 +287,8 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, s
 
     n = FLAGS.n_exp
 
-    x_start, x_end, x_plan = np.tile(x_start, (n, 1, 1, 1)), np.tile(x_end, (n, 1, 1, 1)), np.tile(x_plan, (n, 1, 1, 1))
+    x_plan = np.random.uniform(-1, 1, (FLAGS.n_exp, FLAGS.plan_steps, 1, FLAGS.latent_dim))
+    x_start, x_end, x_plan = np.tile(x_start, (n, 1, 1, 1)), np.tile(x_end, (n, 1, 1, 1)), x_plan
 
     if FLAGS.cond:
         ACTION_PLAN = target_vars['ACTION_PLAN']
