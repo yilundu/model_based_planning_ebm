@@ -167,7 +167,7 @@ def get_avg_step_num(target_vars, sess, env):
             kill = False
 
             if FLAGS.cond:
-                for i in range(actions.shape[1]):
+                for i in range(actions.shape[1]-1):
                     obs, _, done, _ = env.step(actions[0, i, :])
                     target_obs = x_joint[0, i+1, 0]
 
