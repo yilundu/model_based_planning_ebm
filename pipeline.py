@@ -41,6 +41,8 @@ flags.DEFINE_string('datasource', 'point', 'point or maze')
 flags.DEFINE_integer('batch_size', 256, 'Size of inputs')
 flags.DEFINE_integer('data_workers', 6, 'Number of different data workers to load data in parallel')
 
+flags.DEFINE_string('model', 'ebm', 'ebm or ff')
+
 # General Experiment Seittings
 flags.DEFINE_string('logdir', 'cachedir', 'location where log of experiments will be stored')
 flags.DEFINE_string('imgdir', 'rollout_images', 'location where image results of experiments will be stored')
@@ -250,10 +252,15 @@ def get_avg_step_num(target_vars, sess, env):
                 ax.add_patch(rect)
             elif FLAGS.datasource == "maze":
                 # Plot the values of boundaries of the maze
-                samples = np.random.uniform(-1, 1, (100000, 2))
-                ob_mask = ~is_maze_valid(samples)
-                walls = samples[ob_mask]
-                plt.plot(walls[:, 0], walls[:, 1], 'ko')
+                ax = plt.gca()
+                rect = patches.Rectangle((-0.75, -1.0), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
+                ax.add_patch(rect)
+                rect = patches.Rectangle((-0.25, -0.75), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
+                ax.add_patch(rect)
+                rect = patches.Rectangle((0.25, -1.0), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
+                ax.add_patch(rect)
+                rect = patches.Rectangle((0.75, -0.75), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
+                ax.add_patch(rect)
 
         plt.plot(traj[:, 0], traj[:, 1], color='green', alpha=0.3)
 
@@ -454,6 +461,49 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
     return target_vars
 
 
+def construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, target_vars={}):
+    actions = ACTION_PLAN
+    steps = tf.constant(0)
+    c = lambda i, x, y: tf.less(i, FLAGS.num_plan_steps)
+
+    def mcmc_step(counter, actions, x_vals):
+        actions = actions + tf.random_normal(tf.shape(actions), mean=0.0, stddev=0.01)
+
+        x_val = X_START
+        x_vals = []
+        for i in range(FLAGS.plan_steps + 1):
+            x_val = model.forward(x_val, weights, action_label=actions[:, i])
+            x_vals.append(x_val)
+
+        x_vals = tf.stack(x_vals, axis=1)
+
+        if FLAGS.anneal:
+            anneal_val = tf.cast(counter, tf.float32) / FLAGS.num_steps
+        else:
+            anneal_val = 1
+
+        energy = tf.reduce_sum(tf.square(x_val - X_END[:, 0, 0]))
+
+        action_grad = tf.gradients(energy, [actions])[0]
+        actions = actions - FLAGS.step_lr * anneal_val * action_grad
+        actions = tf.clip_by_value(actions, -1.0, 1.0)
+
+        counter = counter + 1
+
+        return counter, actions, x_vals
+
+    steps, actions, x_joint = tf.while_loop(c, mcmc_step, (steps, actions, tf.concat([X_START, X_PLAN], axis=1)[:, :, 0]))
+
+    target_vars['x_joint'] = tf.expand_dims(x_joint, axis=2)
+    target_vars['actions'] = actions
+    target_vars['X_START'] = X_START
+    target_vars['X_END'] = X_END
+    target_vars['X_PLAN'] = X_PLAN
+    target_vars['ACTION_PLAN'] = ACTION_PLAN
+
+    return target_vars
+
+
 def main():
     logdir = osp.join(FLAGS.logdir, FLAGS.exp)
     if not osp.exists(logdir):
@@ -461,7 +511,11 @@ def main():
     logger = TensorBoardOutputFormat(logdir)
 
     if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze':
-        model = TrajNetLatentFC(dim_input=FLAGS.total_frame)
+        if FLAGS.model == "ebm":
+            model = TrajNetLatentFC(dim_input=FLAGS.total_frame)
+        elif FLAGS.model == "ff":
+            model = TrajFFDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.latent_dim)
+
         X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim),
                                  dtype=tf.float32)
         X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
@@ -479,10 +533,13 @@ def main():
     LR = tf.placeholder(tf.float32, [])
     optimizer = AdamOptimizer(LR, beta1=0.0, beta2=0.999)
 
-    if FLAGS.cond:
-        target_vars = construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN)
-    else:
-        target_vars = construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL)
+    if FLAGS.model == "ebm":
+        if FLAGS.cond:
+            target_vars = construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN)
+        else:
+            target_vars = construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL)
+    elif FLAGS.model == "ff":
+        target_vars = construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN)
 
     sess = tf.InteractiveSession()
     saver = loader = tf.train.Saver(max_to_keep=10, keep_checkpoint_every_n_hours=2)

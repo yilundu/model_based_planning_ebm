@@ -150,8 +150,6 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
 
         action, ob_pair = parse_valid_obs(obs, traj_actions, dones)
 
-
-        print(x_traj.shape)
         x_noise = np.stack([x_traj[:, :-1], x_traj[:, 1:]], axis=2)
         s = x_noise.shape
         x_noise_neg = x_noise.reshape((s[0] * s[1], s[2], s[3], s[4]))
@@ -177,7 +175,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         batch_size = x_noise_neg.shape[0]
         if FLAGS.replay_batch and len(replay_buffer) > batch_size:
             replay_batch = replay_buffer.sample(batch_size)
-            replay_mask = (np.random.uniform(0, 1, (batch_size)) > 0.50)
+            replay_mask = (np.random.uniform(0, 1, (batch_size)) > 0.2)
             feed_dict[X_NOISE][replay_mask] = replay_batch[replay_mask]
 
 
@@ -364,6 +362,8 @@ def construct_ff_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LA
     target_vars['ACTION_NOISE_LABEL'] = ACTION_NOISE_LABEL
 
     return target_vars
+
+
 def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, optimizer):
     target_vars = {}
     x_mods = []
