@@ -10,7 +10,7 @@ from utils import ReplayBuffer, parse_valid_obs
 from baselines.logger import TensorBoardOutputFormat
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
 from tensorflow.python.platform import flags
-from traj_model import TrajNetLatentFC, TrajInverseDynamics
+from traj_model import TrajNetLatentFC, TrajInverseDynamics, TrajFFDynamics
 from custom_adam import AdamOptimizer
 from baselines.bench import Monitor
 import seaborn as sns
@@ -22,6 +22,7 @@ flags.DEFINE_string('datasource', 'point', 'point or maze')
 flags.DEFINE_string('exp', 'rl_default', 'name of experiment')
 flags.DEFINE_integer('num_env', 128, 'batch size and number of planning steps')
 flags.DEFINE_string('logdir', 'cachedir', 'location where log of rl experiments will be stored')
+flags.DEFINE_string('model', 'ebm', 'ebm or ff')
 flags.DEFINE_bool('train', True, 'whether to train with environmental interaction or not')
 flags.DEFINE_bool('debug', False, 'print out outputs of information')
 flags.DEFINE_integer('save_interval', 1000, 'save outputs every so many batches')
@@ -39,7 +40,7 @@ flags.DEFINE_integer('action_dim', 24, 'Number of dimension for encoding action 
 flags.DEFINE_integer('input_objects', 1, 'Number of objects to predict the trajectory of.')
 flags.DEFINE_bool('spec_norm', True, 'Whether to use spectral normalization on weights')
 flags.DEFINE_bool('fast_goal', False, 'Try to reach the goal quicly')
-flags.DEFINE_bool('v_penalty', True, 'Penalty for distance between two points')
+flags.DEFINE_bool('v_penalty', False, 'Penalty for distance between two points')
 
 # EBM settings
 flags.DEFINE_integer('num_steps', 20, 'Steps of gradient descent for training')
@@ -121,7 +122,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         obs = [ob[:, 0, 0, :]]
         dones = []
         diffs = []
-        for i in range(traj_actions.shape[1]):
+        for i in range(traj_actions.shape[1] - 1):
             action = traj_actions[:, i]
             # action = np.random.uniform(-1, 1, traj_actions[:, i].shape)
             ob, _, done, infos = env.step(action)
@@ -150,6 +151,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         action, ob_pair = parse_valid_obs(obs, traj_actions, dones)
 
 
+        print(x_traj.shape)
         x_noise = np.stack([x_traj[:, :-1], x_traj[:, 1:]], axis=2)
         s = x_noise.shape
         x_noise_neg = x_noise.reshape((s[0] * s[1], s[2], s[3], s[4]))
@@ -175,7 +177,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         batch_size = x_noise_neg.shape[0]
         if FLAGS.replay_batch and len(replay_buffer) > batch_size:
             replay_batch = replay_buffer.sample(batch_size)
-            replay_mask = (np.random.uniform(0, 1, (batch_size)) > 0.99)
+            replay_mask = (np.random.uniform(0, 1, (batch_size)) > 0.50)
             feed_dict[X_NOISE][replay_mask] = replay_batch[replay_mask]
 
 
@@ -211,13 +213,55 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         if itr % FLAGS.save_interval == 0:
             saver.save(sess, osp.join(FLAGS.logdir, FLAGS.exp, 'model_{}'.format(itr)))
 
-        if FLAGS.heatmap and itr == 100:
+        if FLAGS.heatmap and itr == 200:
             total_obs = np.concatenate(total_obs, axis=0)
-            print(total_obs.shape)
+            total_obs = total_obs[np.random.permutation(total_obs.shape[0])[:2000000]]
             sns.jointplot(x=total_obs[:, 0], y=total_obs[:, 1], kind="kde")
             plt.savefig("kde.png")
             assert False
 
+
+def construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, target_vars={}):
+    actions = ACTION_PLAN
+    steps = tf.constant(0)
+    c = lambda i, x, y: tf.less(i, FLAGS.num_plan_steps)
+
+    def mcmc_step(counter, actions, x_vals):
+        actions = actions + tf.random_normal(tf.shape(actions), mean=0.0, stddev=0.01)
+
+        x_val = X_START
+        x_vals = []
+        for i in range(FLAGS.plan_steps + 1):
+            x_val = model.forward(x_val, weights, action_label=actions[:, i])
+            x_vals.append(x_val)
+
+        x_vals = tf.stack(x_vals, axis=1)
+
+        if FLAGS.anneal:
+            anneal_val = tf.cast(counter, tf.float32) / FLAGS.num_steps
+        else:
+            anneal_val = 1
+
+        energy = tf.reduce_sum(tf.square(x_val - X_END[:, 0, 0]))
+
+        action_grad = tf.gradients(energy, [actions])[0]
+        actions = actions - FLAGS.step_lr * anneal_val * action_grad
+        actions = tf.clip_by_value(actions, -1.0, 1.0)
+
+        counter = counter + 1
+
+        return counter, actions, x_vals
+
+    steps, actions, x_joint = tf.while_loop(c, mcmc_step, (steps, actions, tf.concat([X_START, X_PLAN], axis=1)[:, :, 0]))
+
+    target_vars['x_joint'] = tf.expand_dims(x_joint, axis=2)
+    target_vars['actions'] = actions
+    target_vars['X_START'] = X_START
+    target_vars['X_END'] = X_END
+    target_vars['X_PLAN'] = X_PLAN
+    target_vars['ACTION_PLAN'] = ACTION_PLAN
+
+    return target_vars
 
 def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, target_vars={}):
     actions = ACTION_PLAN
@@ -277,6 +321,49 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, ta
 
     return target_vars
 
+
+def construct_ff_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, optimizer):
+    target_vars = {}
+    x_mods = []
+
+    x_pred = model.forward(X[:, 0, 0], weights, action_label=ACTION_LABEL)
+    loss_total = tf.reduce_mean(tf.square(x_pred - X[:, 1, 0]))
+    target_vars['dyn_loss'] = tf.zeros(1)
+    target_vars['dyn_dist'] = tf.zeros(1)
+
+    gvs = optimizer.compute_gradients(loss_total)
+    gvs = [(k, v) for (k, v) in gvs if k is not None]
+    print("Applying gradients...")
+    grads, vs = zip(*gvs)
+
+    def filter_grad(g, v):
+        return tf.clip_by_value(g, -1e5, 1e5)
+
+    capped_gvs = [(filter_grad(grad, var), var) for grad, var in gvs]
+    gvs = capped_gvs
+    train_op = optimizer.apply_gradients(gvs)
+
+    target_vars['train_op'] = train_op
+
+    target_vars['loss_ml'] = tf.zeros(1)
+    target_vars['loss_total'] = loss_total
+    target_vars['gvs'] = gvs
+    target_vars['loss_energy'] = tf.zeros(1)
+
+    target_vars['weights'] = weights
+    target_vars['X'] = X
+    target_vars['X_NOISE'] = X_NOISE
+    target_vars['energy_pos'] = tf.zeros(1)
+    target_vars['energy_neg'] = tf.zeros(1)
+    target_vars['x_grad'] = tf.zeros(1)
+    target_vars['action_grad'] = tf.zeros(1)
+    target_vars['x_mod'] = tf.zeros(1)
+    target_vars['x_off'] = tf.zeros(1)
+    target_vars['temp'] = FLAGS.temperature
+    target_vars['ACTION_LABEL'] = ACTION_LABEL
+    target_vars['ACTION_NOISE_LABEL'] = ACTION_NOISE_LABEL
+
+    return target_vars
 def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, optimizer):
     target_vars = {}
     x_mods = []
@@ -426,7 +513,10 @@ def main():
     env = SubprocVecEnv([make_env(i + FLAGS.seed) for i in range(FLAGS.num_env)])
 
     if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze':
-        model = TrajNetLatentFC(dim_input=FLAGS.total_frame)
+        if FLAGS.model == "ebm":
+            model = TrajNetLatentFC(dim_input=FLAGS.total_frame)
+        elif FLAGS.model == "ff":
+            model = TrajFFDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.latent_dim)
         X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
         X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
 
@@ -440,8 +530,13 @@ def main():
 
     weights = model.construct_weights(action_size=FLAGS.action_dim)
     optimizer = AdamOptimizer(1e-2, beta1=0.0, beta2=0.999)
-    target_vars = construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, optimizer)
-    target_vars = construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, target_vars=target_vars)
+
+    if FLAGS.model == "ff":
+        target_vars = construct_ff_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, optimizer)
+        target_vars = construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, target_vars=target_vars)
+    else:
+        target_vars = construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, optimizer)
+        target_vars = construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, target_vars=target_vars)
 
     sess = tf.InteractiveSession()
     saver = loader = tf.train.Saver(max_to_keep=10, keep_checkpoint_every_n_hours=2)

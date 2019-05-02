@@ -217,9 +217,7 @@ class TrajFFDynamics(object):
         dtype = tf.float32
         conv_initializer = tf.contrib.layers.xavier_initializer_conv2d(dtype=dtype)
         fc_initializer = tf.contrib.layers.xavier_initializer(dtype=dtype)
-
-        if not FLAGS.cond:
-            action_size = 0
+        print(action_size)
 
         with tf.variable_scope(scope):
             weights['ff_w1'] = get_weight('w1',
@@ -242,12 +240,10 @@ class TrajFFDynamics(object):
         def swish(inp):
             return inp * tf.nn.sigmoid(inp)
 
-        print(inp.get_shape())
-        print(action_label.get_shape())
         joint = inp
         joint = tf.reshape(joint, (-1, FLAGS.input_objects * self.dim_input))
 
-        if action_label is not None and FLAGS.cond:
+        if action_label is not None:
             joint = tf.concat([joint, action_label], axis=1)
 
         h1 = tf.nn.relu(tf.matmul(joint, weights['ff_w1']) + weights['ff_b1'])

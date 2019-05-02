@@ -103,8 +103,6 @@ class Maze(gym.Env):
         else:
             done = False
 
-        done = False
-
         return observation, reward, done, info
 
     def seed(self, seed):
