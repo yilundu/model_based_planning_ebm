@@ -223,7 +223,7 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
 
             if len(replay_buffer) > FLAGS.batch_size:
                 replay_batch = replay_buffer.sample(FLAGS.batch_size)
-                replay_mask = (np.random.uniform(0, 1, (FLAGS.batch_size)) > 0.01)
+                replay_mask = (np.random.uniform(0, 1, (FLAGS.batch_size)) > 0.05)
                 # replay_batch = np.clip(replay_batch, -1, 1)
                 data_corrupt[replay_mask] = replay_batch[replay_mask]
 

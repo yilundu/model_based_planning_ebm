@@ -14,7 +14,7 @@ import tensorflow as tf
 from baselines.logger import TensorBoardOutputFormat
 from tensorflow.python.platform import flags
 
-from traj_model import TrajInverseDynamics, TrajNetLatentFC
+from traj_model import TrajInverseDynamics, TrajNetLatentFC, TrajFFDynamics
 
 mpl.use('Agg')
 import matplotlib.pyplot as plt
@@ -25,7 +25,7 @@ from custom_adam import AdamOptimizer
 import seaborn as sns
 from gen_data import is_maze_valid
 
-from envs import Point, Maze
+from envs import Point, Maze, Reacher
 
 sns.set()
 
@@ -123,6 +123,9 @@ if FLAGS.datasource == 'point':
 elif FLAGS.datasource == 'maze':
     FLAGS.latent_dim = 2
     FLAGS.action_dim = 2
+elif FLAGS.datasource == 'reacher':
+    FLAGS.latent_dim = 4
+    FLAGS.action_dim = 2
 
 
 def log_step_num_exp(d):
@@ -136,8 +139,6 @@ def log_step_num_exp(d):
 def get_avg_step_num(target_vars, sess, env):
     n_exp = FLAGS.n_benchmark_exp
     cond = 'True' if FLAGS.cond else 'False'
-    obs = env.reset()
-    start = obs
     collected_trajs = []
 
     for i in range(n_exp):
@@ -145,6 +146,8 @@ def get_avg_step_num(target_vars, sess, env):
         length = 0
         cum_rewards = []
         cum_reward = 0
+        obs = env.reset()
+        start = obs
         while True:
             current_point = obs
             end_point = env.end
@@ -156,11 +159,11 @@ def get_avg_step_num(target_vars, sess, env):
 
             x_start = current_point[None, None, None, :]
             x_end = end_point[None, None, None, :]
-            x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, 2))
+            x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, FLAGS.latent_dim))
 
             if FLAGS.cond:
                 ACTION_PLAN = target_vars['ACTION_PLAN']
-                actions = np.random.uniform(-0.05, 0.05, (1, FLAGS.plan_steps + 1, 2))
+                actions = np.random.uniform(-1.0, 1.0, (1, FLAGS.plan_steps + 1, 2))
                 x_joint, actions = sess.run([x_joint, output_actions],
                                                    {X_START: x_start, X_END: x_end,
                                                     X_PLAN: x_plan, ACTION_PLAN: actions})
@@ -187,7 +190,7 @@ def get_avg_step_num(target_vars, sess, env):
                         kill = True
                         break
 
-                    if np.abs(target_obs - obs).mean() > 0.15:
+                    if np.abs(target_obs - obs).mean() > 0.55:
                         break
 
             else:
@@ -206,7 +209,8 @@ def get_avg_step_num(target_vars, sess, env):
                         kill = True
                         break
 
-                    if np.abs(target_obs - obs).mean() > 0.15:
+                    if np.abs(target_obs - obs).mean() > 0.55:
+                        print("replanning")
                         break
 
             print("done")
@@ -215,10 +219,7 @@ def get_avg_step_num(target_vars, sess, env):
                 break
 
             # Only score environments for length equal to 1000
-            if FLAGS.score_reward and length > 1000:
-                break
-
-            if length > 10000:
+            if FLAGS.score_reward and len(points) > 1000:
                 break
 
         cum_rewards.append(cum_reward)
@@ -378,7 +379,11 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
 
             # TODO change to be the appropriate weight for distance to goal
             # L2 distance goal specification
-            cum_energies = cum_energies + 1e-3 * tf.reduce_sum(tf.abs(x_joint[:, -1:] - X_END))
+
+            if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
+                cum_energies = cum_energies + tf.reduce_mean(tf.square(x_joint[:, -1:] - X_END), axis=[1, 2, 3])
+            elif FLAGS.datasource == "reacher":
+                cum_energies = cum_energies + tf.reduce_mean(tf.square(x_joint[:, -1:, :, :2] - X_END), axis=[1, 2, 3])
 
             x_grad = tf.gradients(cum_energies, [x_joint])[0]
             x_joint = x_joint - FLAGS.step_lr * tf.cast(counter, tf.float32) / FLAGS.num_steps * x_grad
@@ -450,7 +455,11 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
             cum_energies += d
 
         # TODO change to be the appropriate weight for distance to goal
-        cum_energies = cum_energies + 1e-3 * tf.reduce_sum(tf.abs(x_joint[:, -1:] - X_END))
+        if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
+            cum_energies = cum_energies + 1e-3 * tf.reduce_sum(tf.square(x_joint[:, -1:] - X_END), axis=[1, 2, 3])
+        elif FLAGS.datasource == "reacher":
+            cum_energies = cum_energies + 1e-3 * tf.reduce_mean(tf.square(x_joint[:, -1:, :, :2] - X_END), axis=[1, 2, 3])
+
 
         x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
         x_joint = x_joint - FLAGS.step_lr * anneal_const * x_grad
@@ -479,7 +488,7 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
 def construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, target_vars={}):
     actions = ACTION_PLAN
     steps = tf.constant(0)
-    c = lambda i, x, y: tf.less(i, FLAGS.num_plan_steps)
+    c = lambda i, x, y: tf.less(i, FLAGS.num_steps)
 
     def mcmc_step(counter, actions, x_vals):
         actions = actions + tf.random_normal(tf.shape(actions), mean=0.0, stddev=0.01)
@@ -497,7 +506,11 @@ def construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN,
         else:
             anneal_val = 1
 
-        energy = tf.reduce_sum(tf.square(x_val - X_END[:, 0, 0]))
+        print(x_val.get_shape())
+        if FLAGS.datasource == "reacher":
+            energy = tf.reduce_sum(tf.square(x_val[:, :2] - X_END[:, 0, 0]))
+        else:
+            energy = tf.reduce_sum(tf.square(x_val - X_END[:, 0, 0]))
 
         action_grad = tf.gradients(energy, [actions])[0]
         actions = actions - FLAGS.step_lr * anneal_val * action_grad
@@ -527,7 +540,7 @@ def main():
 
     if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze':
         if FLAGS.model == "ebm":
-            model = TrajNetLatentFC(dim_input=FLAGS.total_frame)
+            model = TrajNetLatentFC(dim_input=FLAGS.latent_dim)
         elif FLAGS.model == "ff":
             model = TrajFFDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.latent_dim)
 
@@ -540,6 +553,21 @@ def main():
         X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
         X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
         X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
+    elif FLAGS.datasource == 'reacher':
+        if FLAGS.model == "ebm":
+            model = TrajNetLatentFC(dim_input=FLAGS.latent_dim)
+        elif FLAGS.model == "ff":
+            model = TrajFFDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.latent_dim)
+
+        X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim),
+                                 dtype=tf.float32)
+        X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
+        ACTION_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
+        ACTION_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps + 1, 2), dtype=tf.float32)
+
+        X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
+        X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
+        X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, 2), dtype=tf.float32)
 
     if not FLAGS.cond:
         ACTION_LABEL = None
@@ -574,6 +602,8 @@ def main():
     elif FLAGS.datasource == 'maze':
         # env = Maze([0.1, 0.0], [0.7, -0.8], FLAGS.eps, FLAGS.obstacle)
         env = Maze([-0.85, -0.85], [0.7, -0.8], FLAGS.eps, FLAGS.obstacle)
+    elif FLAGS.datasource == 'reacher':
+        env = Reacher([0.7, 0.5], FLAGS.eps)
     else:
         raise KeyError
 

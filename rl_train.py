@@ -4,7 +4,7 @@ import tensorflow as tf
 # from tensorflow.nn.rnn_cell import LSTMCell
 import os.path as osp
 import os
-from envs import Point, Maze
+from envs import Point, Maze, Reacher
 from utils import ReplayBuffer, parse_valid_obs
 
 from baselines.logger import TensorBoardOutputFormat
@@ -25,6 +25,7 @@ flags.DEFINE_string('logdir', 'cachedir', 'location where log of rl experiments 
 flags.DEFINE_string('model', 'ebm', 'ebm or ff')
 flags.DEFINE_bool('train', True, 'whether to train with environmental interaction or not')
 flags.DEFINE_bool('debug', False, 'print out outputs of information')
+flags.DEFINE_bool('random_action', False, 'do random actions')
 flags.DEFINE_integer('save_interval', 1000, 'save outputs every so many batches')
 flags.DEFINE_integer('test_interval', 1000, 'evaluate outputs every so many batches')
 flags.DEFINE_integer('log_interval', 10, 'interval to log values')
@@ -107,10 +108,12 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
     points = []
     total_obs = []
     for itr in range(resume_iter, tot_iter):
-        x_plan = np.random.uniform(-1, 1, (FLAGS.num_env, FLAGS.plan_steps, 1, 2))
+        x_plan = np.random.uniform(-1, 1, (FLAGS.num_env, FLAGS.plan_steps, 1, FLAGS.latent_dim))
         action_plan = np.random.uniform(-1, 1, (FLAGS.num_env, FLAGS.plan_steps + 1, 2))
         if FLAGS.datasource == "maze":
             x_end = np.tile(np.array([[0.7, -0.8]]), (FLAGS.num_env, 1))[:, None, None, :]
+        elif FLAGS.datasource == "reacher":
+            x_end = np.tile(np.array([[0.7, 0.5]]), (FLAGS.num_env, 1))[:, None, None, :]
         else:
             x_end = np.tile(np.array([[0.5, 0.5]]), (FLAGS.num_env, 1))[:, None, None, :]
         x_traj, traj_actions = sess.run([x_joint, actions], {X_START: ob, X_PLAN: x_plan, X_END: x_end, ACTION_PLAN: action_plan})
@@ -126,8 +129,12 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         dones = []
         diffs = []
         for i in range(traj_actions.shape[1] - 1):
-            action = traj_actions[:, i]
-            # action = np.random.uniform(-1, 1, traj_actions[:, i].shape)
+
+            if FLAGS.random_action:
+                action = np.random.uniform(-1, 1, traj_actions[:, i].shape)
+            else:
+                action = traj_actions[:, i]
+
             ob, _, done, infos = env.step(action)
 
             if i == 0:
@@ -156,7 +163,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         x_noise = np.stack([x_traj[:, :-1], x_traj[:, 1:]], axis=2)
         s = x_noise.shape
         x_noise_neg = x_noise.reshape((s[0] * s[1], s[2], s[3], s[4]))
-        action_noise_neg = traj_actions[:, 1:]
+        action_noise_neg = traj_actions[:, :-1]
         s = action_noise_neg.shape
         action_noise_neg = action_noise_neg.reshape((s[0]*s[1], s[2]))
 
@@ -178,8 +185,9 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         batch_size = x_noise_neg.shape[0]
         if FLAGS.replay_batch and len(replay_buffer) > batch_size and FLAGS.model == 'ebm':
             replay_batch = replay_buffer.sample(batch_size)
-            replay_mask = (np.random.uniform(0, 1, (batch_size)) > 0.8)
-            feed_dict[X_NOISE][replay_mask] = replay_batch[replay_mask]
+            # replay_mask = (np.random.uniform(0, 1, (batch_size)) > 0.95)
+            # feed_dict[X_NOISE][replay_mask] = replay_batch[replay_mask]
+            feed_dict[X_NOISE] = np.concatenate([feed_dict[X_NOISE], replay_batch], axis=0)
 
 
         if itr % FLAGS.log_interval == 0:
@@ -214,10 +222,10 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         if itr % FLAGS.save_interval == 0:
             saver.save(sess, osp.join(FLAGS.logdir, FLAGS.exp, 'model_{}'.format(itr)))
 
-        if FLAGS.heatmap and itr == 200:
+        if FLAGS.heatmap and itr == 100:
             total_obs = np.concatenate(total_obs, axis=0)
-            total_obs = total_obs[np.random.permutation(total_obs.shape[0])[:2000000]]
-            sns.jointplot(x=total_obs[:, 0], y=total_obs[:, 1], kind="kde")
+            # total_obs = total_obs[np.random.permutation(total_obs.shape[0])[:2000000]]
+            sns.kdeplot(data=total_obs[:, 0], data2=total_obs[:, 1], shade=True, n_levels=30)
             plt.savefig("kde.png")
             assert False
 
@@ -243,7 +251,10 @@ def construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN,
         else:
             anneal_val = 1
 
-        energy = tf.reduce_sum(tf.square(x_val - X_END[:, 0, 0]))
+        if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
+            energy = tf.reduce_sum(tf.square(x_val - X_END[:, 0, 0]))
+        else:
+            energy = tf.reduce_sum(tf.square(x_val[:, :2] - X_END[:, 0, 0]))
 
         action_grad = tf.gradients(energy, [actions])[0]
         actions = actions - FLAGS.step_lr * anneal_val * action_grad
@@ -288,17 +299,23 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, ta
             cum_energies = tf.Print(cum_energies, [cum_energies], message="energy")
 
         if FLAGS.fast_goal:
-            cum_energies = cum_energies + tf.reduce_sum(tf.square(x_joint - X_END))
+            cum_energies = cum_energies + 0.001 * tf.reduce_mean(tf.square(x_joint - X_END), axis=[1, 2, 3])
 
         if FLAGS.v_penalty:
-            cum_energies = cum_energies + 0.001 * tf.reduce_mean(tf.square(x_joint[:, 1:] - x_joint[:, :-1]))
+            cum_energies = cum_energies + 0.001 * tf.reduce_mean(tf.square(x_joint[:, 1:] - x_joint[:, :-1]), axis=[1, 2, 3])
 
-        cum_energies = cum_energies + tf.reduce_mean(tf.abs(x_joint[:, -1:] - X_END))
+        if not FLAGS.heatmap:
+            if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
+                cum_energies = cum_energies + tf.reduce_mean(tf.square(x_joint[:, -1:] - X_END))
+            elif FLAGS.datasource == "reacher":
+                cum_energies = cum_energies + tf.reduce_mean(tf.square(x_joint[:, -1:, :, :2] - X_END))
 
         x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
         x_joint = x_joint - FLAGS.step_lr  *  anneal_val * x_grad
         x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps+1]], axis=1)
-        x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
+
+        if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
+            x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
 
         if FLAGS.cond:
             actions = actions - FLAGS.step_lr * anneal_val * action_grad
@@ -310,8 +327,15 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, ta
 
     steps, x_joint, actions = tf.while_loop(c, mcmc_step, (steps, x_joint, actions))
 
-    if FLAGS.gt_inverse_dynamics:
+    if FLAGS.gt_inverse_dynamics and FLAGS.datasource != "reacher":
         actions = tf.clip_by_value(20.0 * (x_joint[:, 1:, 0] - x_joint[:, :-1, 0]), -1.0, 1.0)
+    elif FLAGS.datasource == "reacher":
+        idyn_model = target_vars['idyn_model']
+        batch_size = tf.shape(x_joint)[0]
+        pair_states = tf.concat([x_joint[:, i:i+2] for i in range(FLAGS.plan_steps)], axis=0)
+        actions = idyn_model.forward(pair_states, weights)
+        actions = tf.reshape(actions, (FLAGS.plan_steps, batch_size, FLAGS.action_dim))
+        actions = tf.transpose(actions, (1, 0, 2))
 
     target_vars['x_joint'] = x_joint
     target_vars['actions'] = actions
@@ -380,7 +404,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
     x_ees = []
 
     if FLAGS.inverse_dynamics:
-        dyn_model = TrajInverseDynamics()
+        dyn_model = TrajInverseDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.action_dim)
         weights = dyn_model.construct_weights(scope="inverse_dynamics", weights=weights)
 
     steps = tf.constant(0)
@@ -488,6 +512,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
     target_vars['temp'] = temp
     target_vars['ACTION_LABEL'] = ACTION_LABEL
     target_vars['ACTION_NOISE_LABEL'] = ACTION_NOISE_LABEL
+    target_vars['idyn_model'] = dyn_model
 
     return target_vars
 
@@ -507,6 +532,8 @@ def main():
                 env = Maze(end=[0.7, -0.8], start=[-0.85, -0.85], random_starts=False)
             elif datasource == "point":
                 env = Point(end=[0.5, 0.5], start=[0.0, 0.0], random_starts=True)
+            elif datasource == "reacher":
+                env = Reacher(end=[0.7, 0.5], eps=0.01)
             env.seed(rank)
             env = Monitor(env, os.path.join("/tmp", str(rank)), allow_early_resets=True)
             return env

@@ -116,9 +116,12 @@ class Maze(gym.Env):
 
 
 class Reacher(gym.Env):
-    def __init__(self, end=[0.7, -0.8], eps=0.01):
-        self.env = gym.make("FetchPush-v1")
+    def __init__(self, end=[0.7, 0.5], eps=0.01):
+        self.env = gym.make("Reacher-v2")
+        print("Action space ", self.env.action_space.shape)
         self.target = np.array(end)
+        self.end = self.target
+        self.eps = eps
 
     def reset(self):
         self.env.reset()
@@ -129,11 +132,12 @@ class Reacher(gym.Env):
     def step(self, action):
         # Scale down action from range (-1, 1) to (-0.05, 0.05)
         reward = 0
+        print("...wtf!", action)
 
         _, _, done, info = self.env.step(action)
         obs = self._get_obs()
 
-        dist = np.abs(self.obs[:2] - self.target).sum()
+        dist = np.abs(obs[:2] - self.target).sum()
         reward = -1 * dist
 
         if dist < self.eps:
@@ -141,13 +145,14 @@ class Reacher(gym.Env):
         else:
             done = done
 
-        return observation, reward, done, info
+        return obs, reward, done, info
 
     def seed(self, seed):
         np.random.seed(seed)
 
     def _get_obs(self):
-        qpos = self.env.sim.data.qpos.copy()
-        qvel = self.env.sim.data.qvel.copy()
+        qpos = self.env.unwrapped.sim.data.qpos.copy()
+        qvel = self.env.unwrapped.sim.data.qvel.copy()
         obs = np.concatenate([qpos[:2], qvel[:2]], axis=0)
+        obs[:2] = (obs[:2] % (2 * np.pi))
         return obs
