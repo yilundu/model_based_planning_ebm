@@ -111,6 +111,7 @@ flags.DEFINE_bool('gt_inverse_dynamics', True, 'Whether to train a inverse dynam
 flags.DEFINE_bool('inverse_dynamics', False, 'Whether to train a inverse dynamics model')
 
 flags.DEFINE_bool('save_single', False, 'Save every single trajectory')
+flags.DEFINE_bool('score_reward', False, 'evaluate the score in an environment')
 
 FLAGS.batch_size *= FLAGS.num_gpus
 
@@ -142,6 +143,8 @@ def get_avg_step_num(target_vars, sess, env):
     for i in range(n_exp):
         points = []
         length = 0
+        cum_rewards = []
+        cum_reward = 0
         while True:
             current_point = obs
             end_point = env.end
@@ -170,8 +173,9 @@ def get_avg_step_num(target_vars, sess, env):
 
             if FLAGS.cond:
                 for i in range(actions.shape[1]-1):
-                    obs, _, done, _ = env.step(actions[0, i, :])
+                    obs, reward, done, _ = env.step(actions[0, i, :])
                     target_obs = x_joint[0, i+1, 0]
+                    cum_reward += reward
 
                     print("obs", obs)
                     print("actions", actions[0, i, :])
@@ -188,8 +192,9 @@ def get_avg_step_num(target_vars, sess, env):
 
             else:
                 for i in range(output_actions.shape[1]):
-                    obs, _, done, _ = env.step(output_actions[0, i, :])
+                    obs, reward, done, _ = env.step(output_actions[0, i, :])
                     target_obs = x_joint[0, i+1, 0]
+                    cum_reward += reward
 
                     print("obs", obs)
                     print("actions", output_actions[0, i, :])
@@ -209,8 +214,14 @@ def get_avg_step_num(target_vars, sess, env):
             if kill:
                 break
 
+            # Only score environments for length equal to 1000
+            if FLAGS.score_reward and length > 1000:
+                break
+
             if length > 10000:
                 break
+
+        cum_rewards.append(cum_reward)
 
         # log number of steps for each experiment
         ts = str(datetime.datetime.now())
@@ -233,59 +244,63 @@ def get_avg_step_num(target_vars, sess, env):
         os.makedirs(imgdir)
 
     lengths = []
-    for traj in collected_trajs:
-        traj = traj.squeeze()
-        if traj.ndim == 1:
-            traj = np.expand_dims(traj, 0)
 
-        # save one image for each trajectory
-        timestamp = str(datetime.datetime.now())
+    if FLAGS.score_reward:
+        print("Obtained an average reward of {} for {} runs on enviroment {}".format(np.mean(cum_rewards), FLAGS.n_benchmark_exp, FLAGS.datasource))
+    else:
+        for traj in collected_trajs:
+            traj = traj.squeeze()
+            if traj.ndim == 1:
+                traj = np.expand_dims(traj, 0)
 
-        if FLAGS.obstacle != None:
-            xy = (FLAGS.obstacle[0], FLAGS.obstacle[-1])
-            w, h = FLAGS.obstacle[2] - FLAGS.obstacle[0], FLAGS.obstacle[1] - FLAGS.obstacle[3]
+            # save one image for each trajectory
+            timestamp = str(datetime.datetime.now())
 
-            # create a Rectangle patch as obstacle
-            if FLAGS.datasource == "point":
-                ax = plt.gca()   # get the current reference
-                rect = patches.Rectangle(xy, w, h, linewidth=1, edgecolor='r', facecolor='none')
-                ax.add_patch(rect)
-            elif FLAGS.datasource == "maze":
-                # Plot the values of boundaries of the maze
-                ax = plt.gca()
-                rect = patches.Rectangle((-0.75, -1.0), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
-                ax.add_patch(rect)
-                rect = patches.Rectangle((-0.25, -0.75), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
-                ax.add_patch(rect)
-                rect = patches.Rectangle((0.25, -1.0), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
-                ax.add_patch(rect)
-                rect = patches.Rectangle((0.75, -0.75), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
-                ax.add_patch(rect)
+            if FLAGS.obstacle != None:
+                xy = (FLAGS.obstacle[0], FLAGS.obstacle[-1])
+                w, h = FLAGS.obstacle[2] - FLAGS.obstacle[0], FLAGS.obstacle[1] - FLAGS.obstacle[3]
 
-        plt.plot(traj[:, 0], traj[:, 1], color='green', alpha=0.3)
+                # create a Rectangle patch as obstacle
+                if FLAGS.datasource == "point":
+                    ax = plt.gca()   # get the current reference
+                    rect = patches.Rectangle(xy, w, h, linewidth=1, edgecolor='r', facecolor='none')
+                    ax.add_patch(rect)
+                elif FLAGS.datasource == "maze":
+                    # Plot the values of boundaries of the maze
+                    ax = plt.gca()
+                    rect = patches.Rectangle((-0.75, -1.0), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
+                    ax.add_patch(rect)
+                    rect = patches.Rectangle((-0.25, -0.75), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
+                    ax.add_patch(rect)
+                    rect = patches.Rectangle((0.25, -1.0), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
+                    ax.add_patch(rect)
+                    rect = patches.Rectangle((0.75, -0.75), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
+                    ax.add_patch(rect)
 
-        if FLAGS.save_single:
-            save_dir = osp.join(imgdir, 'test_{}_iter{}_{}.png'.format(FLAGS.exp, FLAGS.resume_iter, timestamp))
+            plt.plot(traj[:, 0], traj[:, 1], color='green', alpha=0.3)
+
+            if FLAGS.save_single:
+                save_dir = osp.join(imgdir, 'test_{}_iter{}_{}.png'.format(FLAGS.exp, FLAGS.resume_iter, timestamp))
+                plt.savefig(save_dir)
+                plt.clf()
+
+            # save all length for calculation of average length
+            lengths.append(traj.shape[0])
+
+        if not FLAGS.save_single:
+            save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
+                                                                               FLAGS.resume_iter, timestamp))
+            if FLAGS.constraint_vel:
+                save_dir += "_vel"
+            if FLAGS.constraint_goal:
+                save_dir += "_goal"
+            save_dir += ".png"
+
             plt.savefig(save_dir)
             plt.clf()
 
-        # save all length for calculation of average length
-        lengths.append(traj.shape[0])
-
-    if not FLAGS.save_single:
-        save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
-                                                                           FLAGS.resume_iter, timestamp))
-        if FLAGS.constraint_vel:
-            save_dir += "_vel"
-        if FLAGS.constraint_goal:
-            save_dir += "_goal"
-        save_dir += ".png"
-
-        plt.savefig(save_dir)
-        plt.clf()
-
-    average_length = sum(lengths) / len(lengths)
-    print("average number of steps:", average_length)
+        average_length = sum(lengths) / len(lengths)
+        print("average number of steps:", average_length)
 
 
 def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL):

@@ -43,8 +43,6 @@ def gen_fetch():
     trajs = np.concatenate(trajs, axis=0)
     actions = np.concatenate(actions, axis=0)
 
-    print(trajs.shape)
-    print(actions.shape)
     np.savez("push.npz", obs=trajs, action=actions)
 
 class QposWrapper(gym.Wrapper):

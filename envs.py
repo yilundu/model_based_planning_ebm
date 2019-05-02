@@ -48,7 +48,10 @@ class Point(gym.Env):
         self.current = np.clip(self.current, -1, 1)
         observation = self.current
 
-        if np.abs(self.current - self.end).sum() < self.eps:
+        dist = np.abs(self.current - self.end).sum()
+        reward = -1 * dist
+
+        if dist < self.eps:
             done = True
         else:
             done = False
@@ -98,7 +101,10 @@ class Maze(gym.Env):
         self.current = np.clip(self.current, -1, 1)
         observation = self.current
 
-        if np.abs(self.current - self.end).sum() < self.eps:
+        dist = np.abs(self.current - self.end).sum()
+        reward = -1 * dist
+
+        if dist < self.eps:
             done = True
         else:
             done = False
@@ -107,3 +113,41 @@ class Maze(gym.Env):
 
     def seed(self, seed):
         np.random.seed(seed)
+
+
+class Reacher(gym.Env):
+    def __init__(self, end=[0.7, -0.8], eps=0.01):
+        self.env = gym.make("FetchPush-v1")
+        self.target = np.array(end)
+
+    def reset(self):
+        self.env.reset()
+        ob = self._get_obs()
+
+        return ob
+
+    def step(self, action):
+        # Scale down action from range (-1, 1) to (-0.05, 0.05)
+        reward = 0
+
+        _, _, done, info = self.env.step(action)
+        obs = self._get_obs()
+
+        dist = np.abs(self.obs[:2] - self.target).sum()
+        reward = -1 * dist
+
+        if dist < self.eps:
+            done = True
+        else:
+            done = done
+
+        return observation, reward, done, info
+
+    def seed(self, seed):
+        np.random.seed(seed)
+
+    def _get_obs(self):
+        qpos = self.env.sim.data.qpos.copy()
+        qvel = self.env.sim.data.qvel.copy()
+        obs = np.concatenate([qpos[:2], qvel[:2]], axis=0)
+        return obs

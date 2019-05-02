@@ -63,6 +63,9 @@ flags.DEFINE_float('nsteps', 1e6, 'Number of steps of environment interaction')
 if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
     FLAGS.latent_dim = 2
     FLAGS.action_dim = 2
+elif FLAGS.datasource == "reacher":
+    FLAGS.latent_dim = 4
+    FLAGS.action_dim = 2
 
 def safemean(xs):
     return np.nan if len(xs) == 0 else np.mean(xs)
@@ -173,9 +176,9 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         feed_dict = {X: ob_pair, X_NOISE: x_noise_neg, ACTION_NOISE: action_noise_neg, ACTION_LABEL: action}
 
         batch_size = x_noise_neg.shape[0]
-        if FLAGS.replay_batch and len(replay_buffer) > batch_size:
+        if FLAGS.replay_batch and len(replay_buffer) > batch_size and FLAGS.model == 'ebm':
             replay_batch = replay_buffer.sample(batch_size)
-            replay_mask = (np.random.uniform(0, 1, (batch_size)) > 0.2)
+            replay_mask = (np.random.uniform(0, 1, (batch_size)) > 0.8)
             feed_dict[X_NOISE][replay_mask] = replay_batch[replay_mask]
 
 
@@ -290,7 +293,7 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, ta
         if FLAGS.v_penalty:
             cum_energies = cum_energies + 0.001 * tf.reduce_mean(tf.square(x_joint[:, 1:] - x_joint[:, :-1]))
 
-        # cum_energies = cum_energies + 1e-5 * tf.reduce_sum(tf.abs(x_joint[:, -1:] - X_END))
+        cum_energies = cum_energies + tf.reduce_mean(tf.abs(x_joint[:, -1:] - X_END))
 
         x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
         x_joint = x_joint - FLAGS.step_lr  *  anneal_val * x_grad
@@ -527,6 +530,21 @@ def main():
         X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
         X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
         X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
+    elif FLAGS.datasource == 'reacher':
+        if FLAGS.model == "ebm":
+            model = TrajNetLatentFC(dim_input=FLAGS.total_frame)
+        elif FLAGS.model == "ff":
+            model = TrajFFDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.latent_dim)
+        X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
+        X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
+
+        ACTION_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
+        ACTION_NOISE_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
+        ACTION_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps+1, 2), dtype=tf.float32)
+
+        X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
+        X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
+        X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, 2), dtype = tf.float32)
 
     weights = model.construct_weights(action_size=FLAGS.action_dim)
     optimizer = AdamOptimizer(1e-2, beta1=0.0, beta2=0.999)
