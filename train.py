@@ -76,7 +76,7 @@ flags.DEFINE_bool('replay_batch', True, 'Whether to use a replay buffer for samp
 flags.DEFINE_bool('cond', False, 'Whether to condition on actions')
 flags.DEFINE_bool('zero_kl', True, 'whether to make the kl be zero')
 flags.DEFINE_integer('temperature', 1, 'Temperature for energy function')
-flags.DEFINE_bool('inverse_dynamics', False, 'Whether to train a inverse dynamics model')
+flags.DEFINE_bool('inverse_dynamics', True, 'Whether to train a inverse dynamics model')
 
 # Projected gradient descent
 flags.DEFINE_float('proj_norm', 0.00, 'Maximum change of input images')
@@ -586,7 +586,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
     loss_energys = []
 
     if FLAGS.inverse_dynamics:
-        dyn_model = TrajInverseDynamics()
+        dyn_model = TrajInverseDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.action_dim)
         weights = dyn_model.construct_weights(scope="inverse_dynamics", weights=weights)
 
     if FLAGS.ff_model:
@@ -787,7 +787,7 @@ def main():
     batch_size = FLAGS.batch_size
 
     if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze' or FLAGS.datasource == 'reacher':
-        model = TrajNetLatentFC(dim_input=FLAGS.total_frame)
+        model = TrajNetLatentFC(dim_input=FLAGS.latent_dim)
         X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim),
                                  dtype=tf.float32)
         X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)

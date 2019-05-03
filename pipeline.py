@@ -401,13 +401,15 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
     steps, x_joint = tf.while_loop(c, mcmc_step, (steps, x_joint))
     print("X_joint shape ", x_joint.get_shape())
 
-    if FLAGS.gt_inverse_dynamics:
+    if FLAGS.gt_inverse_dynamics and FLAGS.datasource != "reacher":
         actions = tf.clip_by_value(20.0 * (x_joint[:, 1:, 0] - x_joint[:, :-1, 0]), -1.0, 1.0)
     elif FLAGS.inverse_dynamics:
-        idyn_model = TrajInverseDynamics()
+        idyn_model = TrajInverseDynamics(dim_output=FLAGS.action_dim, dim_input=FLAGS.latent_dim)
         weights = idyn_model.construct_weights(scope="inverse_dynamics", weights=weights)
-        pair_states = tf.concat([x_joint[:, i:i+2] for i in range(FLAGS.plan_steps+1)], axis=0)
+        batch_size = tf.shape(x_joint)[0]
+        pair_states = tf.concat([x_joint[:, i:i+2] for i in range(FLAGS.plan_steps)], axis=0)
         actions = idyn_model.forward(pair_states, weights)
+        actions = tf.transpose(tf.reshape(actions, (FLAGS.plan_steps, batch_size, FLAGS.action_dim)), (1, 0, 2))
 
     print("actions shape ", actions.get_shape())
     target_vars = {}

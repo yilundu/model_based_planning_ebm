@@ -171,7 +171,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         encode_data = np.concatenate([ob_pair, np.tile(traj_action_encode, (1, FLAGS.total_frame, 1, 1))], axis=3)
         pos_replay_buffer.add(encode_data)
 
-        if len(pos_replay_buffer) > FLAGS.num_env * FLAGS.plan_steps and FLAGS.replay_batch:
+        if len(pos_replay_buffer) > FLAGS.num_env * FLAGS.plan_steps:
             sample_data = pos_replay_buffer.sample(FLAGS.num_env * FLAGS.plan_steps)
             sample_ob = sample_data[:, :, :, :-FLAGS.action_dim]
             sample_actions = sample_data[:, 0, 0, -FLAGS.action_dim:]
@@ -184,7 +184,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
 
         batch_size = x_noise_neg.shape[0]
         if FLAGS.replay_batch and len(replay_buffer) > batch_size and FLAGS.model == 'ebm':
-            replay_batch = replay_buffer.sample(int(batch_size / 10.))
+            replay_batch = replay_buffer.sample(int(batch_size / 2.))
             # replay_mask = (np.random.uniform(0, 1, (batch_size)) > 0.95)
             # feed_dict[X_NOISE][replay_mask] = replay_batch[replay_mask]
             feed_dict[X_NOISE] = np.concatenate([feed_dict[X_NOISE], replay_batch], axis=0)
@@ -222,7 +222,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         if itr % FLAGS.save_interval == 0:
             saver.save(sess, osp.join(FLAGS.logdir, FLAGS.exp, 'model_{}'.format(itr)))
 
-        if FLAGS.heatmap and itr == 100:
+        if FLAGS.heatmap and itr == 200:
             total_obs = np.concatenate(total_obs, axis=0)
             total_obs = total_obs[np.random.permutation(total_obs.shape[0])[:2000000]]
             sns.kdeplot(data=total_obs[:, 0], data2=total_obs[:, 1], shade=True, n_levels=30)
@@ -354,8 +354,18 @@ def construct_ff_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LA
 
     x_pred = model.forward(X[:, 0, 0], weights, action_label=ACTION_LABEL)
     loss_total = tf.reduce_mean(tf.square(x_pred - X[:, 1, 0]))
-    target_vars['dyn_loss'] = tf.zeros(1)
-    target_vars['dyn_dist'] = tf.zeros(1)
+
+    dyn_model = TrajInverseDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.action_dim)
+    weights = dyn_model.construct_weights(scope="inverse_dynamics", weights=weights)
+    output_action = dyn_model.forward(X, weights)
+    dyn_loss = tf.reduce_mean(tf.square(output_action - ACTION_LABEL))
+    dyn_dist = tf.reduce_mean(tf.abs(output_action - ACTION_LABEL))
+    target_vars['dyn_loss'] = dyn_loss
+    target_vars['dyn_dist'] = dyn_dist
+
+    dyn_optimizer = AdamOptimizer(1e-3)
+    gvs = dyn_optimizer.compute_gradients(dyn_loss)
+    dyn_train_op = dyn_optimizer.apply_gradients(gvs)
 
     gvs = optimizer.compute_gradients(loss_total)
     gvs = [(k, v) for (k, v) in gvs if k is not None]
@@ -368,6 +378,9 @@ def construct_ff_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LA
     capped_gvs = [(filter_grad(grad, var), var) for grad, var in gvs]
     gvs = capped_gvs
     train_op = optimizer.apply_gradients(gvs)
+
+    if FLAGS.inverse_dynamics:
+        train_op = tf.group(train_op, dyn_train_op)
 
     target_vars['train_op'] = train_op
 
@@ -544,7 +557,7 @@ def main():
 
     if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze':
         if FLAGS.model == "ebm":
-            model = TrajNetLatentFC(dim_input=FLAGS.total_frame)
+            model = TrajNetLatentFC(dim_input=FLAGS.latent_dim)
         elif FLAGS.model == "ff":
             model = TrajFFDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.latent_dim)
         X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
@@ -559,7 +572,7 @@ def main():
         X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
     elif FLAGS.datasource == 'reacher':
         if FLAGS.model == "ebm":
-            model = TrajNetLatentFC(dim_input=FLAGS.total_frame)
+            model = TrajNetLatentFC(dim_input=FLAGS.latent_dim)
         elif FLAGS.model == "ff":
             model = TrajFFDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.latent_dim)
         X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
