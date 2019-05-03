@@ -150,6 +150,7 @@ class TrajNetLatentFC(object):
         h1 = tf.nn.leaky_relu(tf.matmul(joint, weights['w1']) + weights['b1'])
         h2 = tf.nn.leaky_relu(tf.matmul(h1, weights['w2']) + weights['b2'])
         h3 = tf.nn.leaky_relu(tf.matmul(h2, weights['w3']) + weights['b3'])
+
         energy = tf.matmul(h3, weights['w6'])
 
         return energy

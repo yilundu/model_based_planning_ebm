@@ -108,7 +108,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
     points = []
     total_obs = []
     for itr in range(resume_iter, tot_iter):
-        x_plan = np.random.uniform(-1, 1, (FLAGS.num_env, FLAGS.plan_steps, 1, FLAGS.latent_dim))
+        x_plan = np.random.uniform(-1.2, 1.2, (FLAGS.num_env, FLAGS.plan_steps, 1, FLAGS.latent_dim))
         action_plan = np.random.uniform(-1, 1, (FLAGS.num_env, FLAGS.plan_steps + 1, 2))
         if FLAGS.datasource == "maze":
             x_end = np.tile(np.array([[0.7, -0.8]]), (FLAGS.num_env, 1))[:, None, None, :]
@@ -171,7 +171,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         encode_data = np.concatenate([ob_pair, np.tile(traj_action_encode, (1, FLAGS.total_frame, 1, 1))], axis=3)
         pos_replay_buffer.add(encode_data)
 
-        if len(pos_replay_buffer) > FLAGS.num_env * FLAGS.plan_steps:
+        if len(pos_replay_buffer) > FLAGS.num_env * FLAGS.plan_steps and FLAGS.replay_batch:
             sample_data = pos_replay_buffer.sample(FLAGS.num_env * FLAGS.plan_steps)
             sample_ob = sample_data[:, :, :, :-FLAGS.action_dim]
             sample_actions = sample_data[:, 0, 0, -FLAGS.action_dim:]
@@ -184,7 +184,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
 
         batch_size = x_noise_neg.shape[0]
         if FLAGS.replay_batch and len(replay_buffer) > batch_size and FLAGS.model == 'ebm':
-            replay_batch = replay_buffer.sample(batch_size)
+            replay_batch = replay_buffer.sample(int(batch_size / 10.))
             # replay_mask = (np.random.uniform(0, 1, (batch_size)) > 0.95)
             # feed_dict[X_NOISE][replay_mask] = replay_batch[replay_mask]
             feed_dict[X_NOISE] = np.concatenate([feed_dict[X_NOISE], replay_batch], axis=0)
@@ -224,7 +224,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
 
         if FLAGS.heatmap and itr == 100:
             total_obs = np.concatenate(total_obs, axis=0)
-            # total_obs = total_obs[np.random.permutation(total_obs.shape[0])[:2000000]]
+            total_obs = total_obs[np.random.permutation(total_obs.shape[0])[:2000000]]
             sns.kdeplot(data=total_obs[:, 0], data2=total_obs[:, 1], shade=True, n_levels=30)
             plt.savefig("kde.png")
             assert False
@@ -305,6 +305,7 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, ta
             cum_energies = cum_energies + 0.001 * tf.reduce_mean(tf.square(x_joint[:, 1:] - x_joint[:, :-1]), axis=[1, 2, 3])
 
         if not FLAGS.heatmap:
+
             if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
                 cum_energies = cum_energies + tf.reduce_mean(tf.square(x_joint[:, -1:] - X_END))
             elif FLAGS.datasource == "reacher":
@@ -315,11 +316,11 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, ta
         x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps+1]], axis=1)
 
         if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
-            x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
+            x_joint = tf.clip_by_value(x_joint, -1.2, 1.2)
 
         if FLAGS.cond:
             actions = actions - FLAGS.step_lr * anneal_val * action_grad
-            actions = tf.clip_by_value(actions, -1.0, 1.0)
+            actions = tf.clip_by_value(actions, -1.2, 1.2)
 
         counter = counter + 1
 
@@ -526,7 +527,6 @@ def main():
     datasource = FLAGS.datasource
     def make_env(rank):
         def _thunk():
-
             # Make the environments non stoppable for now
             if datasource == "maze":
                 env = Maze(end=[0.7, -0.8], start=[-0.85, -0.85], random_starts=False)

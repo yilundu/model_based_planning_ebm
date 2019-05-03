@@ -159,6 +159,7 @@ def get_avg_step_num(target_vars, sess, env):
 
             x_start = current_point[None, None, None, :]
             x_end = end_point[None, None, None, :]
+
             x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, FLAGS.latent_dim))
 
             if FLAGS.cond:
@@ -601,7 +602,7 @@ def main():
         env = Point(start_arr, end_arr, FLAGS.eps, FLAGS.obstacle)
     elif FLAGS.datasource == 'maze':
         # env = Maze([0.1, 0.0], [0.7, -0.8], FLAGS.eps, FLAGS.obstacle)
-        env = Maze([-0.85, -0.85], [0.7, -0.8], FLAGS.eps, FLAGS.obstacle)
+        env = Maze([-0.85, -0.85], [-0.45, 0.8], FLAGS.eps, FLAGS.obstacle)
     elif FLAGS.datasource == 'reacher':
         env = Reacher([0.7, 0.5], FLAGS.eps)
     else:

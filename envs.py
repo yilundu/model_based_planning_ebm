@@ -132,7 +132,6 @@ class Reacher(gym.Env):
     def step(self, action):
         # Scale down action from range (-1, 1) to (-0.05, 0.05)
         reward = 0
-        print("...wtf!", action)
 
         _, _, done, info = self.env.step(action)
         obs = self._get_obs()
@@ -154,5 +153,6 @@ class Reacher(gym.Env):
         qpos = self.env.unwrapped.sim.data.qpos.copy()
         qvel = self.env.unwrapped.sim.data.qvel.copy()
         obs = np.concatenate([qpos[:2], qvel[:2]], axis=0)
-        obs[:2] = (obs[:2] % (2 * np.pi))
+        obs[:2] = ((obs[:2] % (2 * np.pi)) - np.pi) / np.pi
+        obs[2:4] = obs[2:4] / 10.0
         return obs
