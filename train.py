@@ -627,6 +627,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
         else:
             x_mod = x_mod + tf.random_normal(tf.shape(x_mod), mean=0.0, stddev=0.01)
             action_label = action_label + tf.random_normal(tf.shape(action_label), mean=0.0, stddev=0.01)
+
             energy_noise = model.forward(x_mod, weights, action_label=action_label, reuse=True, stop_at_grad=True)
             lr = FLAGS.step_lr
 
@@ -648,11 +649,15 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
 
         return counter, x_mod, action_label
 
+    print(ACTION_NOISE_LABEL.get_shape(), ACTION_LABEL.get_shape())
     steps, x_mod, action_label = tf.while_loop(c, mcmc_step, (steps, x_mod, ACTION_NOISE_LABEL))
     # action_label = tf.Print(action_label, [action_label], "action label (HELP ME)")
 
     if FLAGS.cond:
-        progress_diff = tf.reduce_mean(tf.abs((x_mod[:, 1, 0] - x_mod[:, 0, 0]) - action_label / 20))
+        if FLAGS.datasource != "reacher":
+            progress_diff = tf.reduce_mean(tf.abs((x_mod[:, 1, 0] - x_mod[:, 0, 0]) - action_label / 20))
+        else:
+            progress_diff = tf.zeros(1)
         # progress_diff = tf.reduce_mean(tf.abs((X[:, 1, 0] - X[:, 0, 0]) - ACTION_LABEL / 20))
     else:
         progress_diff = tf.zeros(1)
@@ -715,8 +720,13 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
         assert (FLAGS.total_frame == 2)
         X_LABEL = X[:, -1, 0]
         output_x = ff_model.forward(X[:, 0], weights, action_label=ACTION_LABEL)
-        ff_loss = tf.reduce_mean(tf.square(output_x - X_LABEL))
-        ff_dist = tf.reduce_mean(tf.abs(output_x - X_LABEL))
+
+        if FLAGS.datasource == "reacher":
+            ff_loss = tf.reduce_mean(tf.square(output_x - X_LABEL))
+            ff_dist = tf.reduce_mean(tf.abs(output_x - X_LABEL))
+        else:
+            ff_loss = tf.reduce_mean(tf.square(output_x - X_LABEL))
+            ff_dist = tf.reduce_mean(tf.abs(output_x - X_LABEL))
         target_vars['ff_loss'] = ff_loss
         target_vars['ff_dist'] = ff_dist
 
@@ -787,7 +797,7 @@ def main():
     batch_size = FLAGS.batch_size
 
     if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze' or FLAGS.datasource == 'reacher':
-        model = TrajNetLatentFC(dim_input=FLAGS.total_frame)
+        model = TrajNetLatentFC(dim_input=FLAGS.latent_dim)
         X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim),
                                  dtype=tf.float32)
         X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
