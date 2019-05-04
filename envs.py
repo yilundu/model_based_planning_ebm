@@ -15,7 +15,6 @@ class Point(gym.Env):
         self.current = np.array(start)
         self.obstacle = obstacle  # obstacle should be a size 4 array specifying top left and bottom right
         self.random_starts = random_starts
-
         self.eps = eps
 
     def reset(self):
