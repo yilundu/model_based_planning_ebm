@@ -113,6 +113,7 @@ flags.DEFINE_bool('inverse_dynamics', False, 'Whether to train a inverse dynamic
 
 flags.DEFINE_bool('save_single', False, 'Save every single trajectory')
 flags.DEFINE_bool('score_reward', False, 'evaluate the score in an environment')
+flags.DEFINE_bool('log_traj', False, 'log every trajectories from get_avg_step_num')
 
 FLAGS.batch_size *= FLAGS.num_gpus
 
@@ -249,7 +250,8 @@ def get_avg_step_num(target_vars, sess, env):
 
     if FLAGS.score_reward:
         print("Obtained an average reward of {} for {} runs on enviroment {}".format(np.mean(cum_rewards), FLAGS.n_benchmark_exp, FLAGS.datasource))
-    else:
+
+    if FLAGS.log_traj:
         for traj in collected_trajs:
             traj = traj.squeeze()
             if traj.ndim == 1:
