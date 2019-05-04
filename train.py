@@ -26,6 +26,7 @@ from utils import ReplayBuffer
 import seaborn as sns
 
 sns.set()
+plt.rcParams["font.family"] = "Times New Roman"
 
 # from inception import get_inception_score
 # from fid import get_fid_score
