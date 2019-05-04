@@ -13,6 +13,7 @@ import matplotlib.patches as patches
 import tensorflow as tf
 from baselines.logger import TensorBoardOutputFormat
 from tensorflow.python.platform import flags
+from utils import optimistic_restore
 
 from traj_model import TrajInverseDynamics, TrajNetLatentFC, TrajFFDynamics
 
@@ -100,7 +101,7 @@ flags.DEFINE_float('start2', 0.0, 'x_start, y')
 flags.DEFINE_float('end1', 0.5, 'x_end, x')
 flags.DEFINE_float('end2', 0.5, 'x_end, y')
 flags.DEFINE_float('eps', 0.01, 'epsilon for done condition')
-flags.DEFINE_list('obstacle', None, 'a size 4 array specifying top left and bottom right, e.g. [0.25, 0.35, 0.3, 0.3]')
+flags.DEFINE_list('obstacle', [0.25, 0.35, 0.3, 0.3], 'a size 4 array specifying top left and bottom right, e.g. [0.25, 0.35, 0.3, 0.3]')
 
 # Additional constraints
 flags.DEFINE_bool('constraint_vel', False, 'A distance constraint between each subsequent state')
@@ -112,6 +113,7 @@ flags.DEFINE_bool('inverse_dynamics', False, 'Whether to train a inverse dynamic
 
 flags.DEFINE_bool('save_single', False, 'Save every single trajectory')
 flags.DEFINE_bool('score_reward', False, 'evaluate the score in an environment')
+flags.DEFINE_bool('log_traj', False, 'log every trajectories from get_avg_step_num')
 
 FLAGS.batch_size *= FLAGS.num_gpus
 
@@ -248,7 +250,8 @@ def get_avg_step_num(target_vars, sess, env):
 
     if FLAGS.score_reward:
         print("Obtained an average reward of {} for {} runs on enviroment {}".format(np.mean(cum_rewards), FLAGS.n_benchmark_exp, FLAGS.datasource))
-    else:
+
+    if FLAGS.log_traj:
         for traj in collected_trajs:
             traj = traj.squeeze()
             if traj.ndim == 1:
@@ -383,7 +386,7 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
             if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
                 cum_energies = cum_energies + tf.reduce_mean(tf.square(x_joint[:, -1:] - X_END), axis=[1, 2, 3])
             elif FLAGS.datasource == "reacher":
-                cum_energies = cum_energies + tf.reduce_mean(tf.square(x_joint[:, -1:, :, :2] - X_END), axis=[1, 2, 3])
+                cum_energies = cum_energies + 0.00005 * tf.reduce_mean(tf.square(x_joint[:, -1:, :, :2] - X_END), axis=[1, 2, 3])
 
             x_grad = tf.gradients(cum_energies, [x_joint])[0]
             x_joint = x_joint - FLAGS.step_lr * tf.cast(counter, tf.float32) / FLAGS.num_steps * x_grad
@@ -572,7 +575,11 @@ def main():
     if not FLAGS.cond:
         ACTION_LABEL = None
 
-    weights = model.construct_weights(action_size=FLAGS.action_dim)
+    if FLAGS.model == "ff":
+        weights = model.construct_weights(action_size=FLAGS.action_dim, scope="ff_model")
+    else:
+        weights = model.construct_weights(action_size=FLAGS.action_dim)
+
     LR = tf.placeholder(tf.float32, [])
     optimizer = AdamOptimizer(LR, beta1=0.0, beta2=0.999)
 
@@ -592,7 +599,7 @@ def main():
 
     if FLAGS.resume_iter != -1:
         model_file = osp.join(logdir, 'model_{}'.format(FLAGS.resume_iter))
-        saver.restore(sess, model_file)
+        saver.restore(sess, model_file) # optimistic_restore(sess, model_file)
 
     start_arr = [FLAGS.start1, FLAGS.start2]
     end_arr = [FLAGS.end1, FLAGS.end2]
@@ -601,7 +608,7 @@ def main():
         env = Point(start_arr, end_arr, FLAGS.eps, FLAGS.obstacle)
     elif FLAGS.datasource == 'maze':
         # env = Maze([0.1, 0.0], [0.7, -0.8], FLAGS.eps, FLAGS.obstacle)
-        env = Maze([-0.85, -0.85], [0.7, -0.8], FLAGS.eps, FLAGS.obstacle)
+        env = Maze([-0.85, -0.85], [-0.4, 0.8], FLAGS.eps, FLAGS.obstacle)
     elif FLAGS.datasource == 'reacher':
         env = Reacher([0.7, 0.5], FLAGS.eps)
     else:
