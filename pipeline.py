@@ -386,7 +386,7 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
             if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
                 cum_energies = cum_energies + tf.reduce_mean(tf.square(x_joint[:, -1:] - X_END), axis=[1, 2, 3])
             elif FLAGS.datasource == "reacher":
-                cum_energies = cum_energies + 0.00005 * tf.reduce_mean(tf.square(x_joint[:, -1:, :, :2] - X_END), axis=[1, 2, 3])
+                cum_energies = cum_energies + tf.reduce_mean(tf.square(x_joint[:, -1:, :, :2] - X_END), axis=[1, 2, 3])
 
             x_grad = tf.gradients(cum_energies, [x_joint])[0]
             x_joint = x_joint - FLAGS.step_lr * tf.cast(counter, tf.float32) / FLAGS.num_steps * x_grad
