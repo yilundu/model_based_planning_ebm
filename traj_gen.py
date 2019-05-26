@@ -1,7 +1,6 @@
-import numpy as np
-from tqdm import tqdm
-
 from multiprocessing.pool import Pool
+
+import numpy as np
 
 
 def gen_instance(arg):
@@ -35,7 +34,7 @@ def gen_instance(arg):
 
         for j in range(100):
             # random sampling of actions
-            #action = env.action_space.sample()
+            # action = env.action_space.sample()
 
             # action ~ pi
 
@@ -72,9 +71,10 @@ def gen_instance(arg):
 
     return (obs, action)
 
+
 def gen(task):
     n = 400
-    args = zip(list(range(n)), [task]*n)
+    args = zip(list(range(n)), [task] * n)
     pool = Pool()
     dat = pool.map(gen_instance, args)
     obs, action = zip(*dat)

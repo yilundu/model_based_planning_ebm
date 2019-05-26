@@ -8,7 +8,6 @@ import imageio
 import matplotlib as mpl
 import matplotlib.patches as patches
 import tensorflow as tf
-# from rl_algs.logger import TensorBoardOutputFormat
 from baselines.logger import TensorBoardOutputFormat
 from tensorflow.python.platform import flags
 
@@ -209,7 +208,7 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
             label = dataloader[:, j - FLAGS.total_frame:j]
             label_i = label[perm_idx[i:i + FLAGS.batch_size]]
             data_corrupt = np.random.uniform(-1.2, 1.2, (
-            FLAGS.batch_size, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim))
+                FLAGS.batch_size, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim))
 
             feed_dict = {X: label_i, X_NOISE: data_corrupt, lr: FLAGS.lr}
 
@@ -608,7 +607,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
             x_noise = tf.random_normal(x_mod_neg_shape, mean=0.0, stddev=0.05)
             x_mod_stack = x_mod_neg = x_mod_neg + x_noise
             x_mod_neg = tf.reshape(x_mod_neg, (
-            x_mod_neg_shape[0] * x_mod_neg_shape[1], x_mod_neg_shape[2], x_mod_neg_shape[3], x_mod_neg_shape[4]))
+                x_mod_neg_shape[0] * x_mod_neg_shape[1], x_mod_neg_shape[2], x_mod_neg_shape[3], x_mod_neg_shape[4]))
 
             if ACTION_LABEL is not None:
                 action_label_tile = tf.reshape(tf.tile(tf.expand_dims(ACTION_LABEL, dim=1), (1, FLAGS.noise_sim, 1)),
@@ -759,7 +758,6 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
         if FLAGS.ff_model:
             train_ops.append(ff_train_op)
 
-
         train_op = tf.group(*train_ops)
 
         target_vars['train_op'] = train_op
@@ -893,6 +891,7 @@ def main():
         debug(target_vars, sess)
     else:
         test(target_vars, saver, sess, logdir, dataset_test, actions_test, dataset_train, mean, std)
+
 
 if __name__ == "__main__":
     main()

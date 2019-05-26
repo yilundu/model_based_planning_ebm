@@ -1,12 +1,13 @@
-import numpy as np
 import gym
+import matplotlib
+import numpy as np
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
 from tqdm import tqdm
 
-import matplotlib
 matplotlib.use('Agg')
 
 import matplotlib.pyplot as plt
+
 
 def gen_fetch():
     # 
@@ -16,12 +17,13 @@ def gen_fetch():
             env.seed(rank)
             env = QposWrapper(env)
             return env
+
         return _thunk
 
     start_index = 0
     num_env = 128
 
-    env =  SubprocVecEnv([make_fetch_env(i + start_index) for i in range(num_env)])
+    env = SubprocVecEnv([make_fetch_env(i + start_index) for i in range(num_env)])
 
     trajs = []
     actions = []
@@ -44,6 +46,7 @@ def gen_fetch():
     actions = np.concatenate(actions, axis=0)
 
     np.savez("push.npz", obs=trajs, action=actions)
+
 
 class QposWrapper(gym.Wrapper):
     def reset(self):
@@ -75,6 +78,7 @@ class ReacherWrapper(gym.Wrapper):
         obs = np.concatenate([qpos[:2], qvel[:2]], axis=0)
         return obs
 
+
 def gen_reacher():
     # 
     def make_fetch_env(rank):
@@ -83,12 +87,13 @@ def gen_reacher():
             env.seed(rank)
             env = ReacherWrapper(env)
             return env
+
         return _thunk
 
     start_index = 0
     num_env = 128
 
-    env =  SubprocVecEnv([make_fetch_env(i + start_index) for i in range(num_env)])
+    env = SubprocVecEnv([make_fetch_env(i + start_index) for i in range(num_env)])
 
     trajs = []
     actions = []
@@ -122,6 +127,7 @@ def gen_reacher():
     print(actions.shape)
     np.savez("reacher.npz", obs=trajs, action=actions, dones=dones)
 
+
 def gen_simple():
     # Free form movement on entire unit square from -1 to 1
     batch_size = 1000000
@@ -132,10 +138,12 @@ def gen_simple():
     total_perb = np.cumsum(action, axis=1)
     total_traj = ob[:, None, :] + total_perb
 
-    np.savez("point.npz", obs=total_traj, action=action*20.)
+    np.savez("point.npz", obs=total_traj, action=action * 20.)
+
 
 def oob(x):
     return (x < -1) | (x > 1)
+
 
 def is_maze_valid(dat):
     # Generate an indicator function for whether a point is valid in a hand designed
@@ -147,11 +155,13 @@ def is_maze_valid(dat):
 
     dat_idx = ((dat[:, 0] + 1) * segs).astype(np.int32)
 
-    data_mask = ((dat_idx % 2) == 0) | (((dat_idx % 4) == 1) & (dat[:, 1] > 0.7)) | (((dat_idx % 4) == 3) & (dat[:, 1] < -0.7))
+    data_mask = ((dat_idx % 2) == 0) | (((dat_idx % 4) == 1) & (dat[:, 1] > 0.7)) | (
+                ((dat_idx % 4) == 3) & (dat[:, 1] < -0.7))
 
     comb_mask = (~oob_mask) & data_mask
 
     return comb_mask
+
 
 def gen_maze():
     # Generate a dataset with of obstacles through which particles are not able to 
@@ -177,7 +187,7 @@ def gen_maze():
         obs.append(ob.copy())
 
     obs = np.stack(obs, axis=1)
-    np.savez("maze.npz", obs=obs, action=actions*20.)
+    np.savez("maze.npz", obs=obs, action=actions * 20.)
 
     plt.plot(obs[0, :, 0], obs[0, :, 1])
     plt.savefig("trajs.png")

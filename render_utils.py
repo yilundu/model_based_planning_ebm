@@ -1,9 +1,10 @@
+import numpy as np
+from gpr.envs import dactyl_locked
 from gpr.envs.dactyl_reach import make_env
-import numpy as npfrom gpr.envs import dactyl_locked
-
 
 dactyl_reach = make_env(randomize=False, her_support=True)
 dactyl_locked = dactyl_locked.make_env(randomize=False, her_support=True)
+
 
 def render_reach(obs, task, mean, std, im_size=200):
     ims = []

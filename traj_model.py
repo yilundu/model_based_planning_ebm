@@ -1,8 +1,7 @@
 import tensorflow as tf
 from tensorflow.python.platform import flags
-import numpy as np
-from utils import conv_block, get_weight, attention, conv_cond_concat, conv_block_3d, attention_2d, conv_block_1d
-from utils import smart_fc_block, init_fc_weight
+
+from utils import get_weight, attention_2d, conv_block_1d
 
 FLAGS = flags.FLAGS
 
