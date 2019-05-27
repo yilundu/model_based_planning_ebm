@@ -1,3 +1,5 @@
+import argparse
+
 import gym
 import matplotlib
 import numpy as np
@@ -8,9 +10,15 @@ matplotlib.use('Agg')
 
 import matplotlib.pyplot as plt
 
+parser = argparse.ArgumentParser()
+parser.add_argument('-save_path', type=str, default='./data/')
+parser.add_argument('--data_type', choices=['simple', 'maze', 'reacher', 'fetch'])
+
+args = parser.parse_args()
+
 
 def gen_fetch():
-    # 
+    # generate data from FetchPush-v1 environment
     def make_fetch_env(rank):
         def _thunk():
             env = gym.make("FetchPush-v1")
@@ -45,7 +53,7 @@ def gen_fetch():
     trajs = np.concatenate(trajs, axis=0)
     actions = np.concatenate(actions, axis=0)
 
-    np.savez("push.npz", obs=trajs, action=actions)
+    np.savez(args.save_path + "push.npz", obs=trajs, action=actions)
 
 
 class QposWrapper(gym.Wrapper):
@@ -80,7 +88,7 @@ class ReacherWrapper(gym.Wrapper):
 
 
 def gen_reacher():
-    # 
+    # generate data from Reacher-v2 environment
     def make_fetch_env(rank):
         def _thunk():
             env = gym.make("Reacher-v2")
@@ -125,7 +133,7 @@ def gen_reacher():
 
     print(trajs.shape)
     print(actions.shape)
-    np.savez("reacher.npz", obs=trajs, action=actions, dones=dones)
+    np.savez(args.save_path + "reacher.npz", obs=trajs, action=actions, dones=dones)
 
 
 def gen_simple():
@@ -138,7 +146,7 @@ def gen_simple():
     total_perb = np.cumsum(action, axis=1)
     total_traj = ob[:, None, :] + total_perb
 
-    np.savez("point.npz", obs=total_traj, action=action * 20.)
+    np.savez(args.save_path + "point.npz", obs=total_traj, action=action * 20.)
 
 
 def oob(x):
@@ -156,7 +164,7 @@ def is_maze_valid(dat):
     dat_idx = ((dat[:, 0] + 1) * segs).astype(np.int32)
 
     data_mask = ((dat_idx % 2) == 0) | (((dat_idx % 4) == 1) & (dat[:, 1] > 0.7)) | (
-                ((dat_idx % 4) == 3) & (dat[:, 1] < -0.7))
+            ((dat_idx % 4) == 3) & (dat[:, 1] < -0.7))
 
     comb_mask = (~oob_mask) & data_mask
 
@@ -173,7 +181,7 @@ def gen_maze():
     ob = ob[ob_mask]
 
     plt.scatter(ob[:, 0], ob[:, 1])
-    plt.savefig("maze.png")
+    plt.savefig(args.save_path + "maze.png")
     plt.clf()
 
     obs = [ob.copy()]
@@ -187,14 +195,20 @@ def gen_maze():
         obs.append(ob.copy())
 
     obs = np.stack(obs, axis=1)
-    np.savez("maze.npz", obs=obs, action=actions * 20.)
+    np.savez(args.save_path + "maze.npz", obs=obs, action=actions * 20.)
 
     plt.plot(obs[0, :, 0], obs[0, :, 1])
-    plt.savefig("trajs.png")
+    plt.savefig(args.save_path + "trajs.png")
 
 
 if __name__ == "__main__":
-    # gen_simple()
-    # gen_maze()
-    gen_reacher()
-    # gen_fetch()
+    if args.data_type == 'simple':
+        gen_simple()
+    elif args.data_type == 'maze':
+        gen_maze()
+    elif args.data_type == 'reacher':
+        gen_reacher()
+    elif args.data_type == 'fetch':
+        gen_fetch()
+    else:
+        raise AssertionError('Invalid data type')
