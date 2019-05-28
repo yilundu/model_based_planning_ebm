@@ -1,6 +1,13 @@
+import argparse
 from multiprocessing.pool import Pool
 
 import numpy as np
+
+parser = argparse.ArgumentParser()
+parser.add_argument('-save_path', type=str, default='./data/')
+parser.add_argument('--task_type', choices=['hand', 'fetch'])
+
+args = parser.parse_args()
 
 
 def gen_instance(arg):
@@ -81,9 +88,9 @@ def gen(task):
     obs = np.concatenate(obs, axis=0)
     action = np.concatenate(action, axis=0)
 
-    np.savez("{}.npz".format(task), obs=obs, action=action)
+    np.savez(args.save_path + "{}.npz".format(task), obs=obs, action=action)
 
 
 if __name__ == "__main__":
     # Task options are fetch and hand
-    gen('hand')
+    gen(args.task_type)
