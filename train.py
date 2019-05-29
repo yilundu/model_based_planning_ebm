@@ -792,9 +792,6 @@ def main():
         os.makedirs(logdir)
     logger = TensorBoardOutputFormat(logdir)
 
-    # Only know the setting for omniglot, not sure about others
-    batch_size = FLAGS.batch_size
-
     if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze' or FLAGS.datasource == 'reacher':
         model = TrajNetLatentFC(dim_input=FLAGS.latent_dim)
         X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim),
@@ -808,6 +805,8 @@ def main():
         X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
         X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
         X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
+    else:
+        raise AssertionError("Unsupported data source")
 
     weights = model.construct_weights(action_size=FLAGS.action_dim)
     LR = tf.placeholder(tf.float32, [])
@@ -816,17 +815,19 @@ def main():
     if FLAGS.train or FLAGS.debug:
         target_vars = construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, LR, optimizer)
     else:
-        if not FLAGS.cond:
-            target_vars = construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL)
-        else:
+        # evaluation
+        if FLAGS.cond:
             if FLAGS.ff_model:
                 target_vars = construct_cond_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN)
             else:
                 target_vars = construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN)
+        else:
+            target_vars = construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL)
 
     sess = tf.InteractiveSession()
     saver = tf.train.Saver(max_to_keep=10, keep_checkpoint_every_n_hours=2)
 
+    # count number of parameters in model
     total_parameters = 0
     for variable in tf.trainable_variables():
         shape = variable.get_shape()
@@ -851,11 +852,11 @@ def main():
         dataset = np.load('point.npz')['obs'][:, :, None, :]
         actions = np.load('point.npz')['action']
         mean, std = 0, 1
-    if FLAGS.datasource == 'maze':
+    elif FLAGS.datasource == 'maze':
         dataset = np.load('maze.npz')['obs'][:, :, None, :]
         actions = np.load('maze.npz')['action']
         mean, std = 0, 1
-    if FLAGS.datasource == "reacher":
+    elif FLAGS.datasource == "reacher":
         dataset = np.load('reacher.npz')['obs'][:, :, None, :]
         actions = np.load('reacher.npz')['action']
         dones = np.load('reacher.npz')['action']
@@ -873,6 +874,11 @@ def main():
         # For now a hacky way to deal with dones since each episode is always of length 50
         dataset = np.concatenate([dataset[:, 49:99], dataset[:, [99] + list(range(49))]], axis=0)
         actions = np.concatenate([actions[:, 49:99], actions[:, [99] + list(range(49))]], axis=0)
+    else:
+        raise AssertionError("Unsupported data source")
+
+    if FLAGS.single:
+        dataset = np.tile(dataset[0:1], (100, 1, 1, 1))[:, :20]
 
     split_idx = int(dataset.shape[0] * 0.9)
 
@@ -880,9 +886,6 @@ def main():
     actions_train = actions[:split_idx]
     dataset_test = dataset[split_idx:]
     actions_test = actions[split_idx:]
-
-    if FLAGS.single:
-        dataset = np.tile(dataset[0:1], (100, 1, 1, 1))[:, :20]
 
     if FLAGS.train:
         train(target_vars, saver, sess, logger, dataset_train, actions_train, resume_itr)
