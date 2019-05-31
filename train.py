@@ -605,7 +605,6 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
             progress_diff = tf.reduce_mean(tf.abs((x_mod[:, 1, 0] - x_mod[:, 0, 0]) - action_label / 20))
         else:
             progress_diff = tf.zeros(1)
-        # progress_diff = tf.reduce_mean(tf.abs((X[:, 1, 0] - X[:, 0, 0]) - ACTION_LABEL / 20))
     else:
         progress_diff = tf.zeros(1)
 
@@ -805,11 +804,14 @@ def main():
         dataset[:, :, :, :2] = dataset[:, :, :, :2] % (2 * np.pi)
         s = dataset.shape
 
-        dataset_flat = dataset.reshape((-1, FLAGS.latent_dim))
+        dataset[:, :, :, :2] = (dataset[:, :, :, :2] - np.pi) / np.pi
+        dataset[:, :, :, 2:] = dataset[:, :, :, 2:] / 10.0
+
+        # dataset_flat = dataset.reshape((-1, FLAGS.latent_dim))
         # dataset = dataset / 55.
-        mean, std = dataset_flat.mean(axis=0), dataset_flat.std(axis=0)
-        std = std + 1e-5
-        dataset = (dataset - mean) / std
+        # mean, std = dataset_flat.mean(axis=0), dataset_flat.std(axis=0)
+        # std = std + 1e-5
+        # dataset = (dataset - mean) / std
         print(dataset.max(), dataset.min())
 
         # For now a hacky way to deal with dones since each episode is always of length 50

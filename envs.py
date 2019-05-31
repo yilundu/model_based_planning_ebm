@@ -49,11 +49,12 @@ class Point(gym.Env):
 
     def step(self, action):
         # Scale down action from range (-1, 1) to (-0.05, 0.05)
+        action = action / max(np.abs(action).max(), 1)
         action = action / 20.
         reward = 0
         info = {}
 
-        action = np.clip(action, -0.05, 0.05)
+        # action = np.clip(action, -0.05, 0.05)
         temp = self.current + action
         if self.obstacle is not None:
             if self.is_step_valid(self.current, temp):
@@ -103,13 +104,13 @@ class Maze(gym.Env):
 
     def step(self, action):
         # Scale down action from range (-1, 1) to (-0.05, 0.05)
-        action = action / (np.abs(action).max() + 1e-5)
+        action = action / max(np.abs(action).max(), 1)
         action = action / 20.
 
         reward = 0
         info = {}
 
-        action = np.clip(action, -0.05, 0.05)
+        # action = np.clip(action, -0.05, 0.05)
         temp = self.current + action
         if is_maze_valid(temp[None, :])[0]:
             self.current = temp
@@ -134,12 +135,30 @@ class Maze(gym.Env):
 
 
 class Reacher(gym.Env):
-    def __init__(self, end=[0.7, 0.5], eps=0.01):
+    def __init__(self, end=[0.7, 0.5], eps=0.01, pretrain_eval=False):
         self.env = gym.make("Reacher-v2")
-        print("Action space ", self.env.action_space.shape)
+
+        # Internal variable for computing reward
         self.target = np.array(end)
+
+        # Visible variable indicating the goal state
         self.end = self.target
+
+        if pretrain_eval:
+            self.cross_preprocess(end)
+
         self.eps = eps
+        self.pretrain_eval = pretrain_eval
+
+        self.mean = np.array([-0.00414585, -0.00524412, -0.0067701 , -0.00752602])
+        self.std = np.array([3.51472521, 1.72293722, 8.62294938, 6.39224953])
+
+    def cross_preprocess(self, end):
+        end[:2] = end[:2] * np.pi + np.pi
+        end[2:4] = end[2:4] * 10.0
+
+        target = (end - self.mean) / self.std
+        self.end = end
 
     def reset(self):
         self.env.reset()
@@ -150,13 +169,12 @@ class Reacher(gym.Env):
     def step(self, action):
         # Scale down action from range (-1, 1) to (-0.05, 0.05)
         reward = 0
-        print("...wtf!", action)
 
         _, _, done, info = self.env.step(action)
         obs = self._get_obs()
 
-        dist = np.abs(obs[:2] - self.target).sum()
-        reward = -1 * dist
+        reward = self.reward()
+        dist = -1 * reward
 
         if dist < self.eps:
             done = True
@@ -168,9 +186,27 @@ class Reacher(gym.Env):
     def seed(self, seed):
         np.random.seed(seed)
 
+    def reward(self):
+        qpos = self.env.unwrapped.sim.data.qpos.copy()
+        qvel = self.env.unwrapped.sim.data.qvel.copy()
+        obs = np.concatenate([qpos[:2], qvel[:2]], axis=0)
+        obs[:2] = ((obs[:2] % (2 * np.pi)) - np.pi) / np.pi
+        obs[2:4] = obs[2:4] / 10.0
+
+        dist = np.minimum(np.minimum(np.abs(obs[:2] - self.target), np.abs(self.target + 2 - obs[:2])), np.abs(self.target - 2 -obs[:2])).sum()
+        reward = -1 * dist
+
+        return reward
+
     def _get_obs(self):
         qpos = self.env.unwrapped.sim.data.qpos.copy()
         qvel = self.env.unwrapped.sim.data.qvel.copy()
         obs = np.concatenate([qpos[:2], qvel[:2]], axis=0)
-        obs[:2] = (obs[:2] % (2 * np.pi))
+
+        if self.pretrain_eval:
+            obs = (obs - mean) / std
+        else:
+            obs[:2] = ((obs[:2] % (2 * np.pi)) - np.pi) / np.pi
+            obs[2:4] = obs[2:4] / 10.0
+
         return obs
