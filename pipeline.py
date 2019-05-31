@@ -42,6 +42,7 @@ flags.DEFINE_integer('batch_size', 256, 'Size of inputs')
 flags.DEFINE_integer('data_workers', 6, 'Number of different data workers to load data in parallel')
 
 flags.DEFINE_string('model', 'ebm', 'ebm or ff')
+flags.DEFINE_bool('pretrain_eval', False, 'either evaluate from pretraining dataset or from online dataset (since there are discrepancies)')
 
 # General Experiment Seittings
 flags.DEFINE_string('logdir', 'cachedir', 'location where log of experiments will be stored')
@@ -575,7 +576,12 @@ def main():
     if not FLAGS.cond:
         ACTION_LABEL = None
 
-    weights = model.construct_weights(action_size=FLAGS.action_dim)
+
+    if FLAGS.model == "ff" and FLAGS.pretrain_eval:
+        weights = model.construct_weights(action_size=FLAGS.action_dim, scope="ff_model")
+    else:
+        weights = model.construct_weights(action_size=FLAGS.action_dim)
+
     LR = tf.placeholder(tf.float32, [])
     optimizer = AdamOptimizer(LR, beta1=0.0, beta2=0.999)
 
