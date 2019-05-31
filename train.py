@@ -388,12 +388,44 @@ def debug(target_vars, sess):
     plt.savefig("cmap.png")
 
 
-def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL):
+def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, cond=False):
     x_joint = tf.concat([X_START, X_PLAN, X_END], axis=1)
     steps = tf.constant(0)
-    c = lambda i, x: tf.less(i, FLAGS.num_steps)
 
-    def mcmc_step(counter, x_joint):
+    if cond:
+        actions = ACTION_LABEL
+        c = lambda i, x, y: tf.less(i, FLAGS.num_steps)
+    else:
+        c = lambda i, x: tf.less(i, FLAGS.num_steps)
+
+    def mcmc_step_cond(counter, x_joint, actions):
+        actions = actions + tf.random_normal(tf.shape(actions), mean=0.0, stddev=0.01)
+        x_joint = x_joint + tf.random_normal(tf.shape(x_joint), mean=0.0, stddev=0.01)
+        cum_energies = 0
+        for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
+            cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=actions[:, i])
+            cum_energies = cum_energies + cum_energy
+
+        cum_energies = tf.Print(cum_energies, [cum_energies], message="energies")
+
+        if FLAGS.anneal:
+            anneal_val = tf.cast(counter, tf.float32) / FLAGS.num_steps
+        else:
+            anneal_val = 1
+
+        x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
+        x_joint = x_joint - FLAGS.step_lr * anneal_val * x_grad
+        x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
+        x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
+
+        actions = actions - FLAGS.step_lr * anneal_val * action_grad
+        actions = tf.clip_by_value(actions, -1.0, 1.0)
+
+        counter = counter + 1
+
+        return counter, x_joint, actions
+
+    def mcmc_step_no_cond(counter, x_joint):
         cum_energies = 0
 
         # Code for doing joint sampling over all possible states
@@ -468,61 +500,19 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
 
         return counter, x_joint
 
-    steps, x_joint = tf.while_loop(c, mcmc_step, (steps, x_joint))
     target_vars = {}
+
+    if cond:
+        steps, x_joint, actions = tf.while_loop(c, mcmc_step_cond, (steps, x_joint, actions))
+        target_vars['actions'] = actions
+    else:
+        steps, x_joint = tf.while_loop(c, mcmc_step_no_cond, (steps, x_joint))
+
     target_vars['x_joint'] = x_joint
     target_vars['X_START'] = X_START
     target_vars['X_END'] = X_END
+    target_vars['X_PLAN'] = X_PLAN
     target_vars['ACTION_LABEL'] = ACTION_LABEL
-    target_vars['X_PLAN'] = X_PLAN
-
-    return target_vars
-
-
-def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, ff=False):
-    actions = ACTION_PLAN
-    x_joint = tf.concat([X_START, X_PLAN, X_END], axis=1)
-    steps = tf.constant(0)
-    c = lambda i, x, y: tf.less(i, FLAGS.num_steps)
-
-    if ff:
-        FLAGS.total_frame = 1
-
-    def mcmc_step(counter, x_joint, actions):
-        actions = actions + tf.random_normal(tf.shape(actions), mean=0.0, stddev=0.01)
-        x_joint = x_joint + tf.random_normal(tf.shape(x_joint), mean=0.0, stddev=0.01)
-        cum_energies = 0
-        for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
-            cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=actions[:, i])
-            cum_energies = cum_energies + cum_energy
-
-        cum_energies = tf.Print(cum_energies, [cum_energies], message="energies")
-
-        if FLAGS.anneal:
-            anneal_val = tf.cast(counter, tf.float32) / FLAGS.num_steps
-        else:
-            anneal_val = 1
-
-        x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
-        x_joint = x_joint - FLAGS.step_lr * anneal_val * x_grad
-        x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
-        x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
-
-        actions = actions - FLAGS.step_lr * anneal_val * action_grad
-        actions = tf.clip_by_value(actions, -1.0, 1.0)
-
-        counter = counter + 1
-
-        return counter, x_joint, actions
-
-    steps, x_joint, actions = tf.while_loop(c, mcmc_step, (steps, x_joint, actions))
-    target_vars = {}
-    target_vars['x_joint'] = x_joint
-    target_vars['actions'] = actions
-    target_vars['X_START'] = X_START
-    target_vars['X_END'] = X_END
-    target_vars['X_PLAN'] = X_PLAN
-    target_vars['ACTION_PLAN'] = ACTION_PLAN
 
     return target_vars
 
@@ -773,10 +763,7 @@ def main():
         target_vars = construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, LR, optimizer)
     else:
         # evaluation
-        if FLAGS.cond:
-            target_vars = construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, FLAGS.ff_model)
-        else:
-            target_vars = construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL)
+        target_vars = construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, FLAGS.ff_model)
 
     sess = tf.InteractiveSession()
     saver = tf.train.Saver(max_to_keep=10, keep_checkpoint_every_n_hours=2)
