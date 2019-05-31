@@ -8,7 +8,6 @@ import imageio
 import matplotlib as mpl
 import matplotlib.patches as patches
 import tensorflow as tf
-# from rl_algs.logger import TensorBoardOutputFormat
 from baselines.logger import TensorBoardOutputFormat
 from tensorflow.python.platform import flags
 
@@ -26,6 +25,7 @@ from utils import ReplayBuffer
 import seaborn as sns
 
 sns.set()
+plt.rcParams["font.family"] = "Times New Roman"
 
 # from inception import get_inception_score
 # from fid import get_fid_score
@@ -208,7 +208,7 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
             label = dataloader[:, j - FLAGS.total_frame:j]
             label_i = label[perm_idx[i:i + FLAGS.batch_size]]
             data_corrupt = np.random.uniform(-1.2, 1.2, (
-            FLAGS.batch_size, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim))
+                FLAGS.batch_size, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim))
 
             feed_dict = {X: label_i, X_NOISE: data_corrupt, lr: FLAGS.lr}
 
@@ -313,7 +313,7 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, s
     else:
         x_joint = sess.run([x_joint], {X_START: x_start, X_END: x_end, X_PLAN: x_plan})[0]
 
-        print("actions:", actions[0])
+    print("actions:", actions[0])
     print("x_joint:", x_joint[0])
 
     imgdir = FLAGS.imgdir
@@ -479,11 +479,14 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
     return target_vars
 
 
-def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN):
+def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, ff=False):
     actions = ACTION_PLAN
     x_joint = tf.concat([X_START, X_PLAN, X_END], axis=1)
     steps = tf.constant(0)
     c = lambda i, x, y: tf.less(i, FLAGS.num_steps)
+
+    if ff:
+        FLAGS.total_frame = 1
 
     def mcmc_step(counter, x_joint, actions):
         actions = actions + tf.random_normal(tf.shape(actions), mean=0.0, stddev=0.01)
@@ -524,58 +527,12 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
     return target_vars
 
 
-def construct_cond_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN):
-    actions = ACTION_PLAN
-    x_joint = tf.concat([X_START, X_PLAN, X_END], axis=1)
-    steps = tf.constant(0)
-    c = lambda i, x, y: tf.less(i, FLAGS.num_steps)
-
-    def mcmc_step(counter, x_joint, actions):
-        actions = actions + tf.random_normal(tf.shape(actions), mean=0.0, stddev=0.01)
-        x_joint = x_joint + tf.random_normal(tf.shape(x_joint), mean=0.0, stddev=0.01)
-        cum_energies = 0
-        for i in range(FLAGS.plan_steps + 2):
-            cum_energy = model.forward(x_joint[:, i], weights, action_label=actions[:, i])
-            cum_energies = cum_energies + cum_energy
-
-        cum_energies = tf.Print(cum_energies, [cum_energies], message="energies")
-
-        if FLAGS.anneal:
-            anneal_val = tf.cast(counter, tf.float32) / FLAGS.num_steps
-        else:
-            anneal_val = 1
-
-        x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
-        x_joint = x_joint - FLAGS.step_lr * anneal_val * x_grad
-        x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
-        x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
-
-        actions = actions - FLAGS.step_lr * anneal_val * action_grad
-        actions = tf.clip_by_value(actions, -1.0, 1.0)
-
-        counter = counter + 1
-
-        return counter, x_joint, actions
-
-    steps, x_joint, actions = tf.while_loop(c, mcmc_step, (steps, x_joint, actions))
-    target_vars = {}
-    target_vars['x_joint'] = x_joint
-    target_vars['actions'] = actions
-    target_vars['X_START'] = X_START
-    target_vars['X_END'] = X_END
-    target_vars['X_PLAN'] = X_PLAN
-    target_vars['ACTION_PLAN'] = ACTION_PLAN
-
-    return target_vars
-
-
 def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, LR, optimizer):
     target_vars = {}
     x_mods = []
 
     energy_pos = model.forward(X, weights, action_label=ACTION_LABEL)
-    energy_noise = energy_start = model.forward(X_NOISE, weights, reuse=True, stop_at_grad=True,
-                                                action_label=ACTION_LABEL)
+    energy_noise = model.forward(X_NOISE, weights, reuse=True, stop_at_grad=True, action_label=ACTION_LABEL)
 
     print("Building graph...")
     x_mod = X_NOISE
@@ -607,7 +564,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
             x_noise = tf.random_normal(x_mod_neg_shape, mean=0.0, stddev=0.05)
             x_mod_stack = x_mod_neg = x_mod_neg + x_noise
             x_mod_neg = tf.reshape(x_mod_neg, (
-            x_mod_neg_shape[0] * x_mod_neg_shape[1], x_mod_neg_shape[2], x_mod_neg_shape[3], x_mod_neg_shape[4]))
+                x_mod_neg_shape[0] * x_mod_neg_shape[1], x_mod_neg_shape[2], x_mod_neg_shape[3], x_mod_neg_shape[4]))
 
             if ACTION_LABEL is not None:
                 action_label_tile = tf.reshape(tf.tile(tf.expand_dims(ACTION_LABEL, dim=1), (1, FLAGS.noise_sim, 1)),
@@ -627,6 +584,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
         else:
             x_mod = x_mod + tf.random_normal(tf.shape(x_mod), mean=0.0, stddev=0.01)
             action_label = action_label + tf.random_normal(tf.shape(action_label), mean=0.0, stddev=0.01)
+
             energy_noise = model.forward(x_mod, weights, action_label=action_label, reuse=True, stop_at_grad=True)
             lr = FLAGS.step_lr
 
@@ -648,12 +606,15 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
 
         return counter, x_mod, action_label
 
+    print(ACTION_NOISE_LABEL.get_shape(), ACTION_LABEL.get_shape())
     steps, x_mod, action_label = tf.while_loop(c, mcmc_step, (steps, x_mod, ACTION_NOISE_LABEL))
     # action_label = tf.Print(action_label, [action_label], "action label (HELP ME)")
 
-    if FLAGS.cond and FLAGS.datasource != "reacher":
-        progress_diff = tf.reduce_mean(tf.abs((x_mod[:, 1, 0] - x_mod[:, 0, 0]) - action_label / 20))
-        # progress_diff = tf.reduce_mean(tf.abs((X[:, 1, 0] - X[:, 0, 0]) - ACTION_LABEL / 20))
+    if FLAGS.cond:
+        if FLAGS.datasource != "reacher":
+            progress_diff = tf.reduce_mean(tf.abs((x_mod[:, 1, 0] - x_mod[:, 0, 0]) - action_label / 20))
+        else:
+            progress_diff = tf.zeros(1)
     else:
         progress_diff = tf.zeros(1)
 
@@ -715,8 +676,13 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
         assert (FLAGS.total_frame == 2)
         X_LABEL = X[:, -1, 0]
         output_x = ff_model.forward(X[:, 0], weights, action_label=ACTION_LABEL)
-        ff_loss = tf.reduce_mean(tf.square(output_x - X_LABEL))
-        ff_dist = tf.reduce_mean(tf.abs(output_x - X_LABEL))
+
+        if FLAGS.datasource == "reacher":
+            ff_loss = tf.reduce_mean(tf.square(output_x - X_LABEL))
+            ff_dist = tf.reduce_mean(tf.abs(output_x - X_LABEL))
+        else:
+            ff_loss = tf.reduce_mean(tf.square(output_x - X_LABEL))
+            ff_dist = tf.reduce_mean(tf.abs(output_x - X_LABEL))
         target_vars['ff_loss'] = ff_loss
         target_vars['ff_dist'] = ff_dist
 
@@ -747,7 +713,6 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
             train_ops.append(dyn_train_op)
         if FLAGS.ff_model:
             train_ops.append(ff_train_op)
-
 
         train_op = tf.group(*train_ops)
 
@@ -783,9 +748,6 @@ def main():
         os.makedirs(logdir)
     logger = TensorBoardOutputFormat(logdir)
 
-    # Only know the setting for omniglot, not sure about others
-    batch_size = FLAGS.batch_size
-
     if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze' or FLAGS.datasource == 'reacher':
         model = TrajNetLatentFC(dim_input=FLAGS.latent_dim)
         X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim),
@@ -799,6 +761,8 @@ def main():
         X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
         X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
         X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
+    else:
+        raise AssertionError("Unsupported data source")
 
     weights = model.construct_weights(action_size=FLAGS.action_dim)
     LR = tf.placeholder(tf.float32, [])
@@ -807,17 +771,16 @@ def main():
     if FLAGS.train or FLAGS.debug:
         target_vars = construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, LR, optimizer)
     else:
-        if not FLAGS.cond:
-            target_vars = construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL)
+        # evaluation
+        if FLAGS.cond:
+            target_vars = construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, FLAGS.ff_model)
         else:
-            if FLAGS.ff_model:
-                target_vars = construct_cond_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN)
-            else:
-                target_vars = construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN)
+            target_vars = construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL)
 
     sess = tf.InteractiveSession()
     saver = tf.train.Saver(max_to_keep=10, keep_checkpoint_every_n_hours=2)
 
+    # count number of parameters in model
     total_parameters = 0
     for variable in tf.trainable_variables():
         shape = variable.get_shape()
@@ -842,11 +805,11 @@ def main():
         dataset = np.load('point.npz')['obs'][:, :, None, :]
         actions = np.load('point.npz')['action']
         mean, std = 0, 1
-    if FLAGS.datasource == 'maze':
+    elif FLAGS.datasource == 'maze':
         dataset = np.load('maze.npz')['obs'][:, :, None, :]
         actions = np.load('maze.npz')['action']
         mean, std = 0, 1
-    if FLAGS.datasource == "reacher":
+    elif FLAGS.datasource == "reacher":
         dataset = np.load('reacher.npz')['obs'][:, :, None, :]
         actions = np.load('reacher.npz')['action']
         dones = np.load('reacher.npz')['action']
@@ -867,6 +830,11 @@ def main():
         # For now a hacky way to deal with dones since each episode is always of length 50
         dataset = np.concatenate([dataset[:, 49:99], dataset[:, [99] + list(range(49))]], axis=0)
         actions = np.concatenate([actions[:, 49:99], actions[:, [99] + list(range(49))]], axis=0)
+    else:
+        raise AssertionError("Unsupported data source")
+
+    if FLAGS.single:
+        dataset = np.tile(dataset[0:1], (100, 1, 1, 1))[:, :20]
 
     split_idx = int(dataset.shape[0] * 0.9)
 
@@ -875,9 +843,6 @@ def main():
     dataset_test = dataset[split_idx:]
     actions_test = actions[split_idx:]
 
-    if FLAGS.single:
-        dataset = np.tile(dataset[0:1], (100, 1, 1, 1))[:, :20]
-
     if FLAGS.train:
         train(target_vars, saver, sess, logger, dataset_train, actions_train, resume_itr)
 
@@ -885,6 +850,7 @@ def main():
         debug(target_vars, sess)
     else:
         test(target_vars, saver, sess, logdir, dataset_test, actions_test, dataset_train, mean, std)
+
 
 if __name__ == "__main__":
     main()

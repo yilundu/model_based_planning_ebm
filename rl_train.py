@@ -1,20 +1,20 @@
-import gym
-import numpy as np
-import tensorflow as tf
+import os
 # from tensorflow.nn.rnn_cell import LSTMCell
 import os.path as osp
-import os
-from envs import Point, Maze, Reacher
-from utils import ReplayBuffer, parse_valid_obs
 
-from baselines.logger import TensorBoardOutputFormat
-from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
-from tensorflow.python.platform import flags
-from traj_model import TrajNetLatentFC, TrajInverseDynamics, TrajFFDynamics
-from custom_adam import AdamOptimizer
-from baselines.bench import Monitor
+import matplotlib.pyplot as plt
+import numpy as np
 import seaborn as sns
-import  matplotlib.pyplot as plt
+import tensorflow as tf
+from baselines.bench import Monitor
+from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
+from baselines.logger import TensorBoardOutputFormat
+from tensorflow.python.platform import flags
+
+from custom_adam import AdamOptimizer
+from envs import Point, Maze, Reacher
+from traj_model import TrajNetLatentFC, TrajInverseDynamics, TrajFFDynamics
+from utils import ReplayBuffer, parse_valid_obs
 
 FLAGS = flags.FLAGS
 
@@ -68,8 +68,10 @@ elif FLAGS.datasource == "reacher":
     FLAGS.latent_dim = 4
     FLAGS.action_dim = 2
 
+
 def safemean(xs):
     return np.nan if len(xs) == 0 else np.mean(xs)
+
 
 def train(target_vars, saver, sess, logger, resume_iter, env):
     tot_iter = int(FLAGS.nsteps // FLAGS.num_env)
@@ -142,7 +144,6 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
                 target_ob = x_traj[:, i+1]
                 print("Abs dist: ", np.mean(np.abs(ob - target_ob)))
 
-
             dones.append(done)
             obs.append(ob)
 
@@ -150,9 +151,9 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
                 maybeepinfo = info.get('episode')
                 if maybeepinfo: epinfos.append(maybeepinfo)
 
-            diffs.append(np.abs(x_traj[:, i+1] - ob).mean())
+            diffs.append(np.abs(x_traj[:, i + 1] - ob).mean())
 
-        ob =  ob[:, None, None, :]
+        ob = ob[:, None, None, :]
         dones = np.array(dones).transpose()
         obs = np.stack(obs, axis=1)[:, :, None, :]
 
@@ -167,7 +168,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         x_noise_neg = x_noise.reshape((s[0] * s[1], s[2], s[3], s[4]))
         action_noise_neg = traj_actions[:, :-1]
         s = action_noise_neg.shape
-        action_noise_neg = action_noise_neg.reshape((s[0]*s[1], s[2]))
+        action_noise_neg = action_noise_neg.reshape((s[0] * s[1], s[2]))
 
         traj_action_encode = action.reshape((-1, 1, 1, FLAGS.action_dim))
         encode_data = np.concatenate([ob_pair, np.tile(traj_action_encode, (1, FLAGS.total_frame, 1, 1))], axis=3)
@@ -181,7 +182,6 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
             ob_pair = np.concatenate([ob_pair, sample_ob], axis=0)
             action = np.concatenate([action, sample_actions], axis=0)
 
-
         feed_dict = {X: ob_pair, X_NOISE: x_noise_neg, ACTION_NOISE: action_noise_neg, ACTION_LABEL: action}
 
         batch_size = x_noise_neg.shape[0]
@@ -191,9 +191,9 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
             # feed_dict[X_NOISE][replay_mask] = replay_batch[replay_mask]
             feed_dict[X_NOISE] = np.concatenate([feed_dict[X_NOISE], replay_batch], axis=0)
 
-
         if itr % FLAGS.log_interval == 0:
-            _, dyn_loss, dyn_dist, e_pos, e_neg, loss_ml, loss_total, x_grad, action_grad, x_mod = sess.run(log_output, feed_dict=feed_dict)
+            _, dyn_loss, dyn_dist, e_pos, e_neg, loss_ml, loss_total, x_grad, action_grad, x_mod = sess.run(log_output,
+                                                                                                            feed_dict=feed_dict)
             kvs = {}
             kvs['e_pos'] = e_pos.mean()
             kvs['e_neg'] = e_neg.mean()
@@ -267,7 +267,8 @@ def construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN,
 
         return counter, actions, x_vals
 
-    steps, actions, x_joint = tf.while_loop(c, mcmc_step, (steps, actions, tf.concat([X_START, X_PLAN], axis=1)[:, :, 0]))
+    steps, actions, x_joint = tf.while_loop(c, mcmc_step,
+                                            (steps, actions, tf.concat([X_START, X_PLAN], axis=1)[:, :, 0]))
 
     target_vars['x_joint'] = tf.expand_dims(x_joint, axis=2)
     target_vars['actions'] = actions
@@ -277,6 +278,7 @@ def construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN,
     target_vars['ACTION_PLAN'] = ACTION_PLAN
 
     return target_vars
+
 
 def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, target_vars={}):
     actions = ACTION_PLAN
@@ -305,7 +307,8 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, ta
             cum_energies = cum_energies + 0.001 * tf.reduce_mean(tf.square(x_joint - X_END), axis=[1, 2, 3])
 
         if FLAGS.v_penalty:
-            cum_energies = cum_energies + 0.001 * tf.reduce_mean(tf.square(x_joint[:, 1:] - x_joint[:, :-1]), axis=[1, 2, 3])
+            cum_energies = cum_energies + 0.001 * tf.reduce_mean(tf.square(x_joint[:, 1:] - x_joint[:, :-1]),
+                                                                 axis=[1, 2, 3])
 
         if not FLAGS.heatmap:
 
@@ -315,8 +318,8 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, ta
                 cum_energies = cum_energies + tf.reduce_mean(tf.square(x_joint[:, -1:, :, :2] - X_END))
 
         x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
-        x_joint = x_joint - FLAGS.step_lr  *  anneal_val * x_grad
-        x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps+1]], axis=1)
+        x_joint = x_joint - FLAGS.step_lr * anneal_val * x_grad
+        x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1]], axis=1)
 
         if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
             x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
@@ -336,7 +339,7 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, ta
     elif FLAGS.datasource == "reacher":
         idyn_model = target_vars['idyn_model']
         batch_size = tf.shape(x_joint)[0]
-        pair_states = tf.concat([x_joint[:, i:i+2] for i in range(FLAGS.plan_steps)], axis=0)
+        pair_states = tf.concat([x_joint[:, i:i + 2] for i in range(FLAGS.plan_steps)], axis=0)
         actions = idyn_model.forward(pair_states, weights)
         actions = tf.reshape(actions, (FLAGS.plan_steps, batch_size, FLAGS.action_dim))
         actions = tf.transpose(actions, (1, 0, 2))
@@ -413,7 +416,8 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
     x_mods = []
 
     energy_pos = model.forward(X, weights, action_label=ACTION_LABEL)
-    energy_noise = energy_start = model.forward(X_NOISE, weights, reuse=True, stop_at_grad=True, action_label=ACTION_LABEL)
+    energy_noise = energy_start = model.forward(X_NOISE, weights, reuse=True, stop_at_grad=True,
+                                                action_label=ACTION_LABEL)
 
     x_mod = X_NOISE
 
@@ -431,7 +435,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
         x_mod = x_mod + tf.random_normal(tf.shape(x_mod), mean=0.0, stddev=0.01)
         action_label = action_label + tf.random_normal(tf.shape(action_label), mean=0.0, stddev=0.01)
         energy_noise = model.forward(x_mod, weights, action_label=action_label, reuse=True)
-        lr =  FLAGS.step_lr
+        lr = FLAGS.step_lr
 
         x_grad = tf.gradients(FLAGS.temperature * energy_noise, [x_mod])[0]
 
@@ -450,7 +454,6 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
         counter = counter + 1
 
         return counter, x_mod, action_label
-
 
     steps, x_mod, action_label = tf.while_loop(c, mcmc_step, (steps, x_mod, ACTION_NOISE_LABEL))
 
@@ -476,7 +479,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
         loss_ml = (pos_loss + tf.reduce_sum(neg_loss))
         loss_total = tf.reduce_mean(loss_ml)
         loss_total = loss_total + \
-            (tf.reduce_mean(tf.square(energy_pos)) + tf.reduce_mean(tf.square((energy_neg))))
+                     (tf.reduce_mean(tf.square(energy_pos)) + tf.reduce_mean(tf.square((energy_neg))))
 
     if FLAGS.inverse_dynamics:
         output_action = dyn_model.forward(X, weights)
@@ -541,6 +544,7 @@ def main():
     logger = TensorBoardOutputFormat(logdir)
 
     datasource = FLAGS.datasource
+
     def make_env(rank):
         def _thunk():
             # Make the environments non stoppable for now
@@ -563,38 +567,41 @@ def main():
             model = TrajNetLatentFC(dim_input=FLAGS.latent_dim)
         elif FLAGS.model == "ff":
             model = TrajFFDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.latent_dim)
-        X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
-        X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
+        X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim),
+                                 dtype=tf.float32)
+        X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
 
         ACTION_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
         ACTION_NOISE_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
         ACTION_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, 2), dtype=tf.float32)
 
-        X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
-        X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
-        X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
+        X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
+        X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
+        X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
     elif FLAGS.datasource == 'reacher':
         if FLAGS.model == "ebm":
             model = TrajNetLatentFC(dim_input=FLAGS.latent_dim)
         elif FLAGS.model == "ff":
             model = TrajFFDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.latent_dim)
-        X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
-        X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
+        X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim),
+                                 dtype=tf.float32)
+        X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
 
         ACTION_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
         ACTION_NOISE_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
         ACTION_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, 2), dtype=tf.float32)
 
-        X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
-        X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype = tf.float32)
-        X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, 2), dtype = tf.float32)
+        X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
+        X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
+        X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, 2), dtype=tf.float32)
 
     weights = model.construct_weights(action_size=FLAGS.action_dim)
     optimizer = AdamOptimizer(1e-2, beta1=0.0, beta2=0.999)
 
     if FLAGS.model == "ff":
         target_vars = construct_ff_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, optimizer)
-        target_vars = construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, target_vars=target_vars)
+        target_vars = construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN,
+                                              target_vars=target_vars)
     else:
         target_vars = construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, optimizer)
         target_vars = construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, target_vars=target_vars)
@@ -611,6 +618,7 @@ def main():
         saver.restore(sess, model_file)
 
     train(target_vars, saver, sess, logger, FLAGS.resume_iter, env)
+
 
 if __name__ == "__main__":
     main()

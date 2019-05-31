@@ -23,7 +23,6 @@ import numpy as np
 from custom_adam import AdamOptimizer
 # from render_utils import render_reach
 import seaborn as sns
-from gen_data import is_maze_valid
 
 from envs import Point, Maze, Reacher
 
@@ -101,7 +100,8 @@ flags.DEFINE_float('start2', 0.0, 'x_start, y')
 flags.DEFINE_float('end1', 0.5, 'x_end, x')
 flags.DEFINE_float('end2', 0.5, 'x_end, y')
 flags.DEFINE_float('eps', 0.01, 'epsilon for done condition')
-flags.DEFINE_list('obstacle', None, 'a size 4 array specifying top left and bottom right, e.g. [0.25, 0.35, 0.3, 0.3]')
+flags.DEFINE_list('obstacle', [0.5, 0.1, 0.1, 0.5],
+                  'a size 4 array specifying top left and bottom right, e.g. [0.25, 0.35, 0.3, 0.3]')
 
 # Additional constraints
 flags.DEFINE_bool('constraint_vel', False, 'A distance constraint between each subsequent state')
@@ -113,6 +113,7 @@ flags.DEFINE_bool('inverse_dynamics', False, 'Whether to train a inverse dynamic
 
 flags.DEFINE_bool('save_single', False, 'Save every single trajectory')
 flags.DEFINE_bool('score_reward', False, 'evaluate the score in an environment')
+flags.DEFINE_bool('log_traj', False, 'log every trajectories from get_avg_step_num')
 
 FLAGS.batch_size *= FLAGS.num_gpus
 
@@ -167,8 +168,8 @@ def get_avg_step_num(target_vars, sess, env):
                 ACTION_PLAN = target_vars['ACTION_PLAN']
                 actions = np.random.uniform(-1.0, 1.0, (1, FLAGS.plan_steps + 1, 2))
                 x_joint, actions = sess.run([x_joint, output_actions],
-                                                   {X_START: x_start, X_END: x_end,
-                                                    X_PLAN: x_plan, ACTION_PLAN: actions})
+                                            {X_START: x_start, X_END: x_end,
+                                             X_PLAN: x_plan, ACTION_PLAN: actions})
             else:
                 x_joint, output_actions = sess.run([x_joint, output_actions],
                                                    {X_START: x_start, X_END: x_end, X_PLAN: x_plan})
@@ -177,9 +178,9 @@ def get_avg_step_num(target_vars, sess, env):
             kill = False
 
             if FLAGS.cond:
-                for i in range(actions.shape[1]-1):
+                for i in range(actions.shape[1] - 1):
                     obs, reward, done, _ = env.step(actions[0, i, :])
-                    target_obs = x_joint[0, i+1, 0]
+                    target_obs = x_joint[0, i + 1, 0]
                     cum_reward += reward
 
                     print("obs", obs)
@@ -198,7 +199,7 @@ def get_avg_step_num(target_vars, sess, env):
             else:
                 for i in range(output_actions.shape[1]):
                     obs, reward, done, _ = env.step(output_actions[0, i, :])
-                    target_obs = x_joint[0, i+1, 0]
+                    target_obs = x_joint[0, i + 1, 0]
                     cum_reward += reward
 
                     print("obs", obs)
@@ -249,8 +250,11 @@ def get_avg_step_num(target_vars, sess, env):
     lengths = []
 
     if FLAGS.score_reward:
-        print("Obtained an average reward of {} for {} runs on enviroment {}".format(np.mean(cum_rewards), FLAGS.n_benchmark_exp, FLAGS.datasource))
-    else:
+        print("Obtained an average reward of {} for {} runs on enviroment {}".format(np.mean(cum_rewards),
+                                                                                     FLAGS.n_benchmark_exp,
+                                                                                     FLAGS.datasource))
+
+    if FLAGS.log_traj:
         for traj in collected_trajs:
             traj = traj.squeeze()
             if traj.ndim == 1:
@@ -265,7 +269,7 @@ def get_avg_step_num(target_vars, sess, env):
 
                 # create a Rectangle patch as obstacle
                 if FLAGS.datasource == "point":
-                    ax = plt.gca()   # get the current reference
+                    ax = plt.gca()  # get the current reference
                     rect = patches.Rectangle(xy, w, h, linewidth=1, edgecolor='r', facecolor='none')
                     ax.add_patch(rect)
                 elif FLAGS.datasource == "maze":
@@ -292,7 +296,7 @@ def get_avg_step_num(target_vars, sess, env):
 
         if not FLAGS.save_single:
             save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
-                                                                               FLAGS.resume_iter, timestamp))
+                                                                           FLAGS.resume_iter, timestamp))
             if FLAGS.constraint_vel:
                 save_dir += "_vel"
             if FLAGS.constraint_goal:
@@ -445,7 +449,8 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
             anneal_const = 1
 
         if FLAGS.debug:
-            cum_energies = tf.Print(cum_energies, [tf.reduce_mean(cum_energies) / (FLAGS.plan_steps - FLAGS.total_frame + 3)])
+            cum_energies = tf.Print(cum_energies,
+                                    [tf.reduce_mean(cum_energies) / (FLAGS.plan_steps - FLAGS.total_frame + 3)])
 
         # cum_energies = cum_energies + 0.000001 * tf.square(x_joint - X_END)
         anneal_const = tf.cast(counter, tf.float32) / FLAGS.num_steps
@@ -462,8 +467,8 @@ def construct_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLA
         if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
             cum_energies = cum_energies + 1e-3 * tf.reduce_sum(tf.square(x_joint[:, -1:] - X_END), axis=[1, 2, 3])
         elif FLAGS.datasource == "reacher":
-            cum_energies = cum_energies + 1e-3 * tf.reduce_mean(tf.square(x_joint[:, -1:, :, :2] - X_END), axis=[1, 2, 3])
-
+            cum_energies = cum_energies + 1e-3 * tf.reduce_mean(tf.square(x_joint[:, -1:, :, :2] - X_END),
+                                                                axis=[1, 2, 3])
 
         x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
         x_joint = x_joint - FLAGS.step_lr * anneal_const * x_grad
@@ -524,7 +529,8 @@ def construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN,
 
         return counter, actions, x_vals
 
-    steps, actions, x_joint = tf.while_loop(c, mcmc_step, (steps, actions, tf.concat([X_START, X_PLAN], axis=1)[:, :, 0]))
+    steps, actions, x_joint = tf.while_loop(c, mcmc_step,
+                                            (steps, actions, tf.concat([X_START, X_PLAN], axis=1)[:, :, 0]))
 
     target_vars['x_joint'] = tf.expand_dims(x_joint, axis=2)
     target_vars['actions'] = actions
@@ -576,8 +582,12 @@ def main():
     if not FLAGS.cond:
         ACTION_LABEL = None
 
+<<<<<<< HEAD
 
     if FLAGS.model == "ff" and FLAGS.pretrain_eval:
+=======
+    if FLAGS.model == "ff":
+>>>>>>> d7df8f5d4314b889612936038581c5f04499e7d9
         weights = model.construct_weights(action_size=FLAGS.action_dim, scope="ff_model")
     else:
         weights = model.construct_weights(action_size=FLAGS.action_dim)
@@ -601,7 +611,7 @@ def main():
 
     if FLAGS.resume_iter != -1:
         model_file = osp.join(logdir, 'model_{}'.format(FLAGS.resume_iter))
-        saver.restore(sess, model_file)
+        saver.restore(sess, model_file)  # optimistic_restore(sess, model_file)
 
     start_arr = [FLAGS.start1, FLAGS.start2]
     end_arr = [FLAGS.end1, FLAGS.end2]
@@ -610,7 +620,11 @@ def main():
         env = Point(start_arr, end_arr, FLAGS.eps, FLAGS.obstacle)
     elif FLAGS.datasource == 'maze':
         # env = Maze([0.1, 0.0], [0.7, -0.8], FLAGS.eps, FLAGS.obstacle)
+<<<<<<< HEAD
         env = Maze([-0.85, -0.85], [-0.45, 0.8], FLAGS.eps, FLAGS.obstacle)
+=======
+        env = Maze([-0.85, -0.85], [-0.4, 0.8], FLAGS.eps, FLAGS.obstacle)
+>>>>>>> d7df8f5d4314b889612936038581c5f04499e7d9
     elif FLAGS.datasource == 'reacher':
         env = Reacher([0.7, 0.5], FLAGS.eps)
     else:

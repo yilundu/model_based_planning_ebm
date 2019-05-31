@@ -1,7 +1,13 @@
-import numpy as np
-from tqdm import tqdm
-
+import argparse
 from multiprocessing.pool import Pool
+
+import numpy as np
+
+parser = argparse.ArgumentParser()
+parser.add_argument('-save_path', type=str, default='./data/')
+parser.add_argument('--task_type', choices=['hand', 'fetch'])
+
+args = parser.parse_args()
 
 
 def gen_instance(arg):
@@ -35,7 +41,7 @@ def gen_instance(arg):
 
         for j in range(100):
             # random sampling of actions
-            #action = env.action_space.sample()
+            # action = env.action_space.sample()
 
             # action ~ pi
 
@@ -72,18 +78,19 @@ def gen_instance(arg):
 
     return (obs, action)
 
+
 def gen(task):
     n = 400
-    args = zip(list(range(n)), [task]*n)
+    args = zip(list(range(n)), [task] * n)
     pool = Pool()
     dat = pool.map(gen_instance, args)
     obs, action = zip(*dat)
     obs = np.concatenate(obs, axis=0)
     action = np.concatenate(action, axis=0)
 
-    np.savez("{}.npz".format(task), obs=obs, action=action)
+    np.savez(args.save_path + "{}.npz".format(task), obs=obs, action=action)
 
 
 if __name__ == "__main__":
     # Task options are fetch and hand
-    gen('hand')
+    gen(args.task_type)

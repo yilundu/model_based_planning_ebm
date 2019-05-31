@@ -1,7 +1,11 @@
+from collections import namedtuple
+
 import gym
 import numpy as np
 
 from gen_data import is_maze_valid
+
+Rectangle = namedtuple('Rectangle', 'xmin ymin xmax ymax')
 
 
 class Point(gym.Env):
@@ -11,7 +15,6 @@ class Point(gym.Env):
         self.current = np.array(start)
         self.obstacle = obstacle  # obstacle should be a size 4 array specifying top left and bottom right
         self.random_starts = random_starts
-
         self.eps = eps
 
     def reset(self):
@@ -22,9 +25,24 @@ class Point(gym.Env):
         # print("Reset ", self.current)
         return self.current
 
-    def is_step_valid(self, pos):
+    def is_overlapping(self, a, b):  # returns None if rectangles don't intersect
+        dx = min(a.xmax, b.xmax) - max(a.xmin, b.xmin)
+        dy = min(a.ymax, b.ymax) - max(a.ymin, b.ymin)
+        if (dx >= 0) and (dy >= 0):
+            return True
+        else:
+            return False
+
+    def is_step_valid(self, curr_pos, next_pos):
         top, left, bottom, right = self.obstacle
-        if left <= pos[0] <= right and bottom <= pos[1] <= top:
+
+        ra = Rectangle(left, bottom, right, top)
+        rb = Rectangle(min(curr_pos[0], next_pos[0]),
+                       min(curr_pos[1], next_pos[1]),
+                       max(curr_pos[0], next_pos[0]),
+                       max(curr_pos[1], next_pos[1]))
+
+        if self.is_overlapping(ra, rb):
             return False
         else:
             return True
@@ -39,7 +57,7 @@ class Point(gym.Env):
         # action = np.clip(action, -0.05, 0.05)
         temp = self.current + action
         if self.obstacle is not None:
-            if self.is_step_valid(temp):
+            if self.is_step_valid(self.current, temp):
                 self.current = temp
             else:
                 pass
