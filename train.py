@@ -8,6 +8,8 @@ import imageio
 import matplotlib as mpl
 import matplotlib.patches as patches
 import tensorflow as tf
+from baselines.bench import Monitor
+from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
 from baselines.logger import TensorBoardOutputFormat
 from tensorflow.python.platform import flags
 
@@ -20,7 +22,7 @@ import numpy as np
 from itertools import product
 from custom_adam import AdamOptimizer
 # from render_utils import render_reach
-from utils import ReplayBuffer, log_step_num_exp
+from utils import ReplayBuffer, log_step_num_exp, parse_valid_obs, safemean
 import seaborn as sns
 
 from envs import Point, Maze, Reacher
@@ -53,6 +55,8 @@ flags.DEFINE_bool('train', True, 'whether to train or test')
 flags.DEFINE_bool('debug', False, 'debug what is going on for conditional models')
 flags.DEFINE_integer('epoch_num', 10, 'Number of Epochs to train on')
 flags.DEFINE_float('lr', 1e-3, 'Learning for training')
+flags.DEFINE_bool('heatmap', False, 'Visualize the heatmap in environments')
+flags.DEFINE_integer('num_env', 128, 'batch size and number of planning steps')
 
 # Custom Experiments Settings
 flags.DEFINE_integer('num_gpus', 1, 'number of gpus to train on')
@@ -102,6 +106,8 @@ flags.DEFINE_bool('gt_inverse_dynamics', True, 'if True, use GT dynamics; if Fal
 
 # use FF to train forward prediction rather than EBM
 flags.DEFINE_bool('ff_model', False, 'Run action conditional with a deterministic FF network')
+
+flags.DEFINE_bool('rl_train', False, 'If true, run rl_train() instead of train()')
 
 flags.DEFINE_integer('n_exp', 1, 'Number of tests run for training and testing')
 
@@ -287,6 +293,167 @@ def get_avg_step_num(target_vars, sess, env):
 
         average_length = sum(lengths) / len(lengths)
         print("average number of steps:", average_length)
+
+
+def rl_train(target_vars, saver, sess, logger, resume_iter, env):
+    tot_iter = int(FLAGS.nsteps // FLAGS.num_env)
+
+    X = target_vars['X']
+    X_NOISE = target_vars['X_NOISE']
+    train_op = target_vars['train_op']
+    loss_ml = target_vars['loss_ml']
+    x_grad = target_vars['x_grad']
+    x_mod = target_vars['x_mod']
+    action_grad = target_vars['action_grad']
+    X_START = target_vars['X_START']
+    X_END = target_vars['X_END']
+    X_PLAN = target_vars['X_PLAN']
+    ACTION_PLAN = target_vars['ACTION_PLAN']
+    ACTION_LABEL = target_vars['ACTION_LABEL']
+    ACTION_NOISE = target_vars['ACTION_NOISE_LABEL']
+    x_joint = target_vars['x_joint']
+    actions = target_vars['actions']
+    energy_pos = target_vars['energy_pos']
+    energy_neg = target_vars['energy_neg']
+    loss_total = target_vars['loss_total']
+    dyn_loss = target_vars['dyn_loss']
+    dyn_dist = target_vars['dyn_dist']
+
+    ob = env.reset()[:, None, None, :]
+
+    output = [train_op, x_mod]
+    log_output = [train_op, dyn_loss, dyn_dist, energy_pos, energy_neg, loss_ml, loss_total, x_grad, action_grad, x_mod]
+
+    print(log_output)
+    replay_buffer = ReplayBuffer(1000000)
+    pos_replay_buffer = ReplayBuffer(1000000)
+
+    epinfos = []
+    points = []
+    total_obs = []
+    for itr in range(resume_iter, tot_iter):
+        x_plan = np.random.uniform(-1.0, 1.0, (FLAGS.num_env, FLAGS.plan_steps, 1, FLAGS.latent_dim))
+        action_plan = np.random.uniform(-1, 1, (FLAGS.num_env, FLAGS.plan_steps, 2))
+        if FLAGS.datasource == "maze":
+            x_end = np.tile(np.array([[0.7, -0.8]]), (FLAGS.num_env, 1))[:, None, None, :]
+        elif FLAGS.datasource == "reacher":
+            x_end = np.tile(np.array([[0.7, 0.5]]), (FLAGS.num_env, 1))[:, None, None, :]
+        else:
+            x_end = np.tile(np.array([[0.5, 0.5]]), (FLAGS.num_env, 1))[:, None, None, :]
+
+        x_traj, traj_actions = sess.run([x_joint, actions],
+                                        {X_START: ob, X_PLAN: x_plan, X_END: x_end, ACTION_PLAN: action_plan})
+
+        # Add some amount of exploration into predicted actions
+        # traj_actions = traj_actions + np.random.uniform(-0.1, 0.1, traj_actions.shape)
+        # traj_actions = np.clip(traj_actions, -1, 1)
+
+        if FLAGS.debug:
+            print(x_traj[0])
+
+        obs = [ob[:, 0, 0, :]]
+        dones = []
+        diffs = []
+        for i in range(traj_actions.shape[1] - 1):
+            if FLAGS.random_action:
+                action = np.random.uniform(-1, 1, traj_actions[:, i].shape)
+            else:
+                action = traj_actions[:, i]
+
+            ob, _, done, infos = env.step(action)
+
+            if i == 0:
+                print(x_traj[0, 0], x_traj[0, 1], ob[0])
+                target_ob = x_traj[:, i + 1]
+                print("Abs dist: ", np.mean(np.abs(ob - target_ob)))
+
+            dones.append(done)
+            obs.append(ob)
+
+            for info in infos:
+                maybeepinfo = info.get('episode')
+                if maybeepinfo: epinfos.append(maybeepinfo)
+
+            diffs.append(np.abs(x_traj[:, i + 1] - ob).mean())
+
+        ob = ob[:, None, None, :]
+        dones = np.array(dones).transpose()
+        obs = np.stack(obs, axis=1)[:, :, None, :]
+
+        if FLAGS.heatmap:
+            total_obs.append(obs.reshape((-1, FLAGS.latent_dim)))
+
+        action, ob_pair = parse_valid_obs(obs, traj_actions, dones)
+
+        # x_noise = np.stack([x_traj[:, :-1], x_traj[:, 1:]], axis=2)
+        x_noise = np.stack([x_traj[:, :10], x_traj[:, 1:11]], axis=2)
+        s = x_noise.shape
+        x_noise_neg = x_noise.reshape((s[0] * s[1], s[2], s[3], s[4]))
+        action_noise_neg = traj_actions[:, :-1]
+        s = action_noise_neg.shape
+        action_noise_neg = action_noise_neg.reshape((s[0] * s[1], s[2]))
+
+        traj_action_encode = action.reshape((-1, 1, 1, FLAGS.action_dim))
+        encode_data = np.concatenate([ob_pair, np.tile(traj_action_encode, (1, FLAGS.total_frame, 1, 1))], axis=3)
+        pos_replay_buffer.add(encode_data)
+
+        if len(pos_replay_buffer) > FLAGS.num_env * FLAGS.plan_steps and FLAGS.replay_batch:
+            sample_data = pos_replay_buffer.sample(FLAGS.num_env * FLAGS.plan_steps)
+            sample_ob = sample_data[:, :, :, :-FLAGS.action_dim]
+            sample_actions = sample_data[:, 0, 0, -FLAGS.action_dim:]
+
+            ob_pair = np.concatenate([ob_pair, sample_ob], axis=0)
+            action = np.concatenate([action, sample_actions], axis=0)
+
+        feed_dict = {X: ob_pair, X_NOISE: x_noise_neg, ACTION_NOISE: action_noise_neg, ACTION_LABEL: action}
+
+        batch_size = x_noise_neg.shape[0]
+        if FLAGS.replay_batch and len(replay_buffer) > batch_size and not FLAGS.ff_model:
+            replay_batch = replay_buffer.sample(int(batch_size / 2.))
+            # replay_mask = (np.random.uniform(0, 1, (batch_size)) > 0.95)
+            # feed_dict[X_NOISE][replay_mask] = replay_batch[replay_mask]
+            feed_dict[X_NOISE] = np.concatenate([feed_dict[X_NOISE], replay_batch], axis=0)
+
+        if itr % FLAGS.log_interval == 0:
+            _, dyn_loss, dyn_dist, e_pos, e_neg, loss_ml, loss_total, x_grad, action_grad, x_mod = sess.run(log_output,
+                                                                                                            feed_dict=feed_dict)
+            kvs = {}
+            kvs['e_pos'] = e_pos.mean()
+            kvs['e_neg'] = e_neg.mean()
+            kvs['loss_ml'] = loss_ml.mean()
+            kvs['loss_total'] = loss_total.mean()
+            kvs['x_grad'] = np.abs(x_grad).mean()
+            kvs['action_grad'] = np.abs(action_grad).mean()
+            kvs['dyn_loss'] = dyn_loss.mean()
+            kvs['dyn_dist'] = np.abs(dyn_dist).mean()
+            kvs['iter'] = itr
+            kvs["train_episode_length_mean"] = safemean([epinfo['l'] for epinfo in epinfos])
+            kvs["diffs"] = diffs[-1]
+
+            epinfos = []
+
+            string = "Obtained a total of "
+            for key, value in kvs.items():
+                string += "{}: {}, ".format(key, value)
+
+            print(string)
+            logger.writekvs(kvs)
+        else:
+            _, x_mod = sess.run(output, feed_dict=feed_dict)
+
+        if FLAGS.replay_batch and (x_mod is not None):
+            replay_buffer.add(x_mod)
+            replay_buffer.add(ob_pair)
+
+        if itr % FLAGS.save_interval == 0:
+            saver.save(sess, osp.join(FLAGS.logdir, FLAGS.exp, 'model_{}'.format(itr)))
+
+        if FLAGS.heatmap and itr == 100:
+            total_obs = np.concatenate(total_obs, axis=0)
+            # total_obs = total_obs[np.random.permutation(total_obs.shape[0])[:1000000]]
+            sns.kdeplot(data=total_obs[:, 0], data2=total_obs[:, 1], shade=True)
+            plt.savefig("kde.png")
+            assert False
 
 
 def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
@@ -741,6 +908,63 @@ def construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN,
     return target_vars
 
 
+def construct_ff_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, optimizer):
+    target_vars = {}
+    x_mods = []
+
+    x_pred = model.forward(X[:, 0, 0], weights, action_label=ACTION_LABEL)
+    loss_total = tf.reduce_mean(tf.square(x_pred - X[:, 1, 0]))
+
+    dyn_model = TrajInverseDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.action_dim)
+    weights = dyn_model.construct_weights(scope="inverse_dynamics", weights=weights)
+    output_action = dyn_model.forward(X, weights)
+    dyn_loss = tf.reduce_mean(tf.square(output_action - ACTION_LABEL))
+    dyn_dist = tf.reduce_mean(tf.abs(output_action - ACTION_LABEL))
+    target_vars['dyn_loss'] = dyn_loss
+    target_vars['dyn_dist'] = dyn_dist
+
+    dyn_optimizer = AdamOptimizer(1e-3)
+    gvs = dyn_optimizer.compute_gradients(dyn_loss)
+    dyn_train_op = dyn_optimizer.apply_gradients(gvs)
+
+    gvs = optimizer.compute_gradients(loss_total)
+    gvs = [(k, v) for (k, v) in gvs if k is not None]
+    print("Applying gradients...")
+    grads, vs = zip(*gvs)
+
+    def filter_grad(g, v):
+        return tf.clip_by_value(g, -1e5, 1e5)
+
+    capped_gvs = [(filter_grad(grad, var), var) for grad, var in gvs]
+    gvs = capped_gvs
+    train_op = optimizer.apply_gradients(gvs)
+
+    if not FLAGS.gt_inverse_dynamics:
+        train_op = tf.group(train_op, dyn_train_op)
+
+    target_vars['train_op'] = train_op
+
+    target_vars['loss_ml'] = tf.zeros(1)
+    target_vars['loss_total'] = loss_total
+    target_vars['gvs'] = gvs
+    target_vars['loss_energy'] = tf.zeros(1)
+
+    target_vars['weights'] = weights
+    target_vars['X'] = X
+    target_vars['X_NOISE'] = X_NOISE
+    target_vars['energy_pos'] = tf.zeros(1)
+    target_vars['energy_neg'] = tf.zeros(1)
+    target_vars['x_grad'] = tf.zeros(1)
+    target_vars['action_grad'] = tf.zeros(1)
+    target_vars['x_mod'] = tf.zeros(1)
+    target_vars['x_off'] = tf.zeros(1)
+    target_vars['temp'] = FLAGS.temperature
+    target_vars['ACTION_LABEL'] = ACTION_LABEL
+    target_vars['ACTION_NOISE_LABEL'] = ACTION_NOISE_LABEL
+
+    return target_vars
+
+
 def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, LR, optimizer):
     target_vars = {}
     x_mods = []
@@ -999,7 +1223,10 @@ def main():
     optimizer = AdamOptimizer(LR, beta1=0.0, beta2=0.999)
 
     if FLAGS.train or FLAGS.debug:
-        target_vars = construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, LR, optimizer)
+        if FLAGS.ff_model:
+            target_vars = construct_ff_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, optimizer)
+        else:
+            target_vars = construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, LR, optimizer)
     else:
         # evaluation
         if FLAGS.ff_model:
@@ -1031,73 +1258,94 @@ def main():
         resume_itr = FLAGS.resume_iter
         saver.restore(sess, model_file)
 
-    if FLAGS.n_benchmark_exp > 0:
-        # perform benchmark experiments (originally in pipeline.py)
-        start_arr = [FLAGS.start1, FLAGS.start2]
-        end_arr = [FLAGS.end1, FLAGS.end2]
+    if FLAGS.rl_train:
+        def make_env(rank):
+            def _thunk():
+                # Make the environments non stoppable for now
+                if FLAGS.datasource == "maze":
+                    env = Maze(end=[0.7, -0.8], start=[-0.85, -0.85], random_starts=False)
+                elif FLAGS.datasource == "point":
+                    env = Point(end=[0.5, 0.5], start=[0.0, 0.0], random_starts=True)
+                elif FLAGS.datasource == "reacher":
+                    env = Reacher(end=[0.7, 0.5], eps=0.01)
+                env.seed(rank)
+                env = Monitor(env, os.path.join("/tmp", str(rank)), allow_early_resets=True)
+                return env
 
-        if FLAGS.datasource == 'point':
-            env = Point(start_arr, end_arr, FLAGS.eps, FLAGS.obstacle)
-        elif FLAGS.datasource == 'maze':
-            env = Maze(start_arr, end_arr, FLAGS.eps, FLAGS.obstacle)
-        elif FLAGS.datasource == 'reacher':
-            env = Reacher([0.7, 0.5], FLAGS.eps)
-        else:
-            raise KeyError
+            return _thunk
 
-        get_avg_step_num(target_vars, sess, env)
+        env = SubprocVecEnv([make_env(i + FLAGS.seed) for i in range(FLAGS.num_env)])
+
+        rl_train(target_vars, saver, sess, logger, FLAGS.resume_iter, env)
 
     else:
-        if FLAGS.datasource == 'point':
-            dataset = np.load('point.npz')['obs'][:, :, None, :]
-            actions = np.load('point.npz')['action']
-            mean, std = 0, 1
-        elif FLAGS.datasource == 'maze':
-            dataset = np.load('maze.npz')['obs'][:, :, None, :]
-            actions = np.load('maze.npz')['action']
-            mean, std = 0, 1
-        elif FLAGS.datasource == "reacher":
-            dataset = np.load('reacher.npz')['obs'][:, :, None, :]
-            actions = np.load('reacher.npz')['action']
-            dones = np.load('reacher.npz')['action']
+        if FLAGS.n_benchmark_exp > 0:
+            # perform benchmark experiments (originally in pipeline.py)
+            start_arr = [FLAGS.start1, FLAGS.start2]
+            end_arr = [FLAGS.end1, FLAGS.end2]
 
-            dataset[:, :, :, :2] = dataset[:, :, :, :2] % (2 * np.pi)
-            s = dataset.shape
+            if FLAGS.datasource == 'point':
+                env = Point(start_arr, end_arr, FLAGS.eps, FLAGS.obstacle)
+            elif FLAGS.datasource == 'maze':
+                env = Maze(start_arr, end_arr, FLAGS.eps, FLAGS.obstacle)
+            elif FLAGS.datasource == 'reacher':
+                env = Reacher([0.7, 0.5], FLAGS.eps)
+            else:
+                raise KeyError
 
-            dataset[:, :, :, :2] = (dataset[:, :, :, :2] - np.pi) / np.pi
-            dataset[:, :, :, 2:] = dataset[:, :, :, 2:] / 10.0
+            get_avg_step_num(target_vars, sess, env)
 
-            # dataset_flat = dataset.reshape((-1, FLAGS.latent_dim))
-            # dataset = dataset / 55.
-            # mean, std = dataset_flat.mean(axis=0), dataset_flat.std(axis=0)
-            # std = std + 1e-5
-            # dataset = (dataset - mean) / std
-            print(dataset.max(), dataset.min())
-
-            # For now a hacky way to deal with dones since each episode is always of length 50
-            dataset = np.concatenate([dataset[:, 49:99], dataset[:, [99] + list(range(49))]], axis=0)
-            actions = np.concatenate([actions[:, 49:99], actions[:, [99] + list(range(49))]], axis=0)
         else:
-            raise AssertionError("Unsupported data source")
+            if FLAGS.datasource == 'point':
+                dataset = np.load('point.npz')['obs'][:, :, None, :]
+                actions = np.load('point.npz')['action']
+                mean, std = 0, 1
+            elif FLAGS.datasource == 'maze':
+                dataset = np.load('maze.npz')['obs'][:, :, None, :]
+                actions = np.load('maze.npz')['action']
+                mean, std = 0, 1
+            elif FLAGS.datasource == "reacher":
+                dataset = np.load('reacher.npz')['obs'][:, :, None, :]
+                actions = np.load('reacher.npz')['action']
+                dones = np.load('reacher.npz')['action']
 
-        if FLAGS.single_task:
-            # train on a single task
-            dataset = np.tile(dataset[0:1], (100, 1, 1, 1))[:, :20]
+                dataset[:, :, :, :2] = dataset[:, :, :, :2] % (2 * np.pi)
+                s = dataset.shape
 
-        split_idx = int(dataset.shape[0] * 0.9)
+                dataset[:, :, :, :2] = (dataset[:, :, :, :2] - np.pi) / np.pi
+                dataset[:, :, :, 2:] = dataset[:, :, :, 2:] / 10.0
 
-        dataset_train = dataset[:split_idx]
-        actions_train = actions[:split_idx]
-        dataset_test = dataset[split_idx:]
-        actions_test = actions[split_idx:]
+                # dataset_flat = dataset.reshape((-1, FLAGS.latent_dim))
+                # dataset = dataset / 55.
+                # mean, std = dataset_flat.mean(axis=0), dataset_flat.std(axis=0)
+                # std = std + 1e-5
+                # dataset = (dataset - mean) / std
+                print(dataset.max(), dataset.min())
 
-        if FLAGS.train:
-            train(target_vars, saver, sess, logger, dataset_train, actions_train, resume_itr)
+                # For now a hacky way to deal with dones since each episode is always of length 50
+                dataset = np.concatenate([dataset[:, 49:99], dataset[:, [99] + list(range(49))]], axis=0)
+                actions = np.concatenate([actions[:, 49:99], actions[:, [99] + list(range(49))]], axis=0)
+            else:
+                raise AssertionError("Unsupported data source")
 
-        if FLAGS.debug:
-            debug(target_vars, sess)
-        else:
-            test(target_vars, saver, sess, logdir, dataset_test, actions_test, dataset_train, mean, std)
+            if FLAGS.single_task:
+                # train on a single task
+                dataset = np.tile(dataset[0:1], (100, 1, 1, 1))[:, :20]
+
+            split_idx = int(dataset.shape[0] * 0.9)
+
+            dataset_train = dataset[:split_idx]
+            actions_train = actions[:split_idx]
+            dataset_test = dataset[split_idx:]
+            actions_test = actions[split_idx:]
+
+            if FLAGS.train:
+                train(target_vars, saver, sess, logger, dataset_train, actions_train, resume_itr)
+
+            if FLAGS.debug:
+                debug(target_vars, sess)
+            else:
+                test(target_vars, saver, sess, logdir, dataset_test, actions_test, dataset_train, mean, std)
 
 
 if __name__ == "__main__":
