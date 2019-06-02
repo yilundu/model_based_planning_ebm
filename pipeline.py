@@ -582,12 +582,7 @@ def main():
     if not FLAGS.cond:
         ACTION_LABEL = None
 
-<<<<<<< HEAD
-
     if FLAGS.model == "ff" and FLAGS.pretrain_eval:
-=======
-    if FLAGS.model == "ff":
->>>>>>> d7df8f5d4314b889612936038581c5f04499e7d9
         weights = model.construct_weights(action_size=FLAGS.action_dim, scope="ff_model")
     else:
         weights = model.construct_weights(action_size=FLAGS.action_dim)
@@ -619,12 +614,7 @@ def main():
     if FLAGS.datasource == 'point':
         env = Point(start_arr, end_arr, FLAGS.eps, FLAGS.obstacle)
     elif FLAGS.datasource == 'maze':
-        # env = Maze([0.1, 0.0], [0.7, -0.8], FLAGS.eps, FLAGS.obstacle)
-<<<<<<< HEAD
         env = Maze([-0.85, -0.85], [-0.45, 0.8], FLAGS.eps, FLAGS.obstacle)
-=======
-        env = Maze([-0.85, -0.85], [-0.4, 0.8], FLAGS.eps, FLAGS.obstacle)
->>>>>>> d7df8f5d4314b889612936038581c5f04499e7d9
     elif FLAGS.datasource == 'reacher':
         env = Reacher([0.7, 0.5], FLAGS.eps)
     else:
