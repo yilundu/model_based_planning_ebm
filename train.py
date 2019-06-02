@@ -36,11 +36,9 @@ torch.manual_seed(1)
 FLAGS = flags.FLAGS
 
 # Dataset Options
-flags.DEFINE_string('type', 'random', 'random or past for initialization of new frame')
 flags.DEFINE_string('datasource', 'point', 'point or maze or reacher')
 flags.DEFINE_integer('batch_size', 256, 'Size of inputs')
-flags.DEFINE_bool('single', False, 'whether to train on a single task')
-flags.DEFINE_integer('data_workers', 6, 'Number of different data workers to load data in parallel')
+flags.DEFINE_bool('single_task', False, 'whether to train on a single task')
 
 flags.DEFINE_bool('pretrain_eval', False,
                   'either evaluate from pretraining dataset or from online dataset (since there are discrepancies)')
@@ -51,13 +49,11 @@ flags.DEFINE_string('imgdir', 'rollout_images', 'location where image results of
 flags.DEFINE_string('exp', 'default', 'name of experiments')
 flags.DEFINE_integer('log_interval', 10, 'log outputs every so many batches')
 flags.DEFINE_integer('save_interval', 1000, 'save outputs every so many batches')
-flags.DEFINE_integer('test_interval', 1000, 'evaluate outputs every so many batches')
 flags.DEFINE_integer('resume_iter', -1, 'iteration to resume training from')
 flags.DEFINE_bool('train', True, 'whether to train or test')
 flags.DEFINE_bool('debug', False, 'debug what is going on for conditional models')
 flags.DEFINE_integer('epoch_num', 10, 'Number of Epochs to train on')
 flags.DEFINE_float('lr', 1e-3, 'Learning for training')
-flags.DEFINE_integer('seed', 0, 'Value of seed')
 
 # Custom Experiments Settings
 flags.DEFINE_integer('num_gpus', 1, 'number of gpus to train on')
@@ -67,10 +63,6 @@ flags.DEFINE_float('l2_coeff', 1.0, 'Scale of regularization')
 flags.DEFINE_integer('num_steps', 20, 'Steps of gradient descent for training')
 
 # Architecture Settings
-flags.DEFINE_bool('max_pool', False, 'Whether or not to use max pooling rather than strided convolutions')
-flags.DEFINE_integer('num_filters', 64, 'number of filters for networks')
-flags.DEFINE_bool('spec_norm', True, 'Whether to use spectral normalization on weights')
-flags.DEFINE_bool('use_bias', True, 'Whether to use bias in convolution')
 flags.DEFINE_integer('input_objects', 1, 'Number of objects to predict the trajectory of.')
 flags.DEFINE_integer('latent_dim', 24, 'Number of dimension encoding state of object')
 flags.DEFINE_integer('action_dim', 24, 'Number of dimension for encoding action of object')
@@ -81,11 +73,6 @@ flags.DEFINE_bool('replay_batch', True, 'Whether to use a replay buffer for samp
 flags.DEFINE_bool('cond', False, 'Whether to condition on actions')
 flags.DEFINE_bool('zero_kl', True, 'whether to make the kl be zero')
 flags.DEFINE_integer('temperature', 1, 'Temperature for energy function')
-flags.DEFINE_bool('inverse_dynamics', True, 'Whether to train a inverse dynamics model')
-
-# Projected gradient descent
-flags.DEFINE_float('proj_norm', 0.00, 'Maximum change of input images')
-flags.DEFINE_string('proj_norm_type', 'li', 'What type of ball for projection, only support l2 and li')
 
 # Custom MCMC parameters
 flags.DEFINE_float('step_lr', 1.0, 'Size of steps for gradient descent')
@@ -112,17 +99,14 @@ flags.DEFINE_list('obstacle', [0.5, 0.1, 0.1, 0.5],
 flags.DEFINE_bool('constraint_vel', False, 'A distance constraint between each subsequent state')
 flags.DEFINE_bool('constraint_goal', False, 'A distance constraint between current state and goal state')
 
-flags.DEFINE_bool('gt_inverse_dynamics', True, 'Whether to train a inverse dynamics model')
-flags.DEFINE_bool('inverse_dynamics', False, 'Whether to train a inverse dynamics model')
+flags.DEFINE_bool('gt_inverse_dynamics', True, 'if True, use GT dynamics; if False, train a inverse dynamics model')
 
 # use FF to train forward prediction rather than EBM
 flags.DEFINE_bool('ff_model', False, 'Run action conditional with a deterministic FF network')
 
-flags.DEFINE_integer('n_exp', 1, 'Number of tests run')
+flags.DEFINE_integer('n_exp', 1, 'Number of tests run for training and testing')
 
 FLAGS.batch_size *= FLAGS.num_gpus
-
-# set_seed(FLAGS.seed)
 
 if FLAGS.datasource == 'point':
     FLAGS.latent_dim = 2
@@ -742,7 +726,7 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
 
         if FLAGS.gt_inverse_dynamics and FLAGS.datasource != "reacher":
             actions = tf.clip_by_value(20.0 * (x_joint[:, 1:, 0] - x_joint[:, :-1, 0]), -1.0, 1.0)
-        elif FLAGS.inverse_dynamics:
+        elif not FLAGS.gt_inverse_dynamics:
             idyn_model = TrajInverseDynamics(dim_output=FLAGS.action_dim, dim_input=FLAGS.latent_dim)
             weights = idyn_model.construct_weights(scope="inverse_dynamics", weights=weights)
             batch_size = tf.shape(x_joint)[0]
@@ -825,7 +809,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
     energy_negs = [energy_noise]
     loss_energys = []
 
-    if FLAGS.inverse_dynamics:
+    if not FLAGS.gt_inverse_dynamics:
         dyn_model = TrajInverseDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.action_dim)
         weights = dyn_model.construct_weights(scope="inverse_dynamics", weights=weights)
 
@@ -940,7 +924,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
         loss_total = loss_total + \
                      FLAGS.l2_coeff * (tf.reduce_mean(tf.square(energy_pos)) + tf.reduce_mean(tf.square((energy_neg))))
 
-    if FLAGS.inverse_dynamics:
+    if not FLAGS.gt_inverse_dynamics:
         output_action = dyn_model.forward(X, weights)
         dyn_loss = tf.reduce_mean(tf.square(output_action - ACTION_LABEL))
         dyn_dist = tf.reduce_mean(tf.abs(output_action - ACTION_LABEL))
@@ -992,7 +976,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
         train_op = optimizer.apply_gradients(gvs)
 
         train_ops = [train_op]
-        if FLAGS.inverse_dynamics:
+        if not FLAGS.gt_inverse_dynamics:
             train_ops.append(dyn_train_op)
         if FLAGS.ff_model:
             train_ops.append(ff_train_op)
@@ -1148,7 +1132,8 @@ def main():
         else:
             raise AssertionError("Unsupported data source")
 
-        if FLAGS.single:
+        if FLAGS.single_task:
+            # train on a single task
             dataset = np.tile(dataset[0:1], (100, 1, 1, 1))[:, :20]
 
         split_idx = int(dataset.shape[0] * 0.9)
