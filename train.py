@@ -972,7 +972,11 @@ def main():
                                  dtype=tf.float32)
         X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
 
-        ACTION_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
+        if FLAGS.cond:
+            ACTION_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
+        else:
+            ACTION_LABEL = None
+
         ACTION_NOISE_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
         ACTION_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps + 1, 2), dtype=tf.float32)
 
@@ -985,9 +989,6 @@ def main():
             X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
     else:
         raise AssertionError("Unsupported data source")
-
-    if not FLAGS.cond:
-        ACTION_LABEL = None
 
     if FLAGS.ff_model and FLAGS.pretrain_eval:
         weights = model.construct_weights(action_size=FLAGS.action_dim, scope="ff_model")
@@ -1038,7 +1039,7 @@ def main():
         if FLAGS.datasource == 'point':
             env = Point(start_arr, end_arr, FLAGS.eps, FLAGS.obstacle)
         elif FLAGS.datasource == 'maze':
-            env = Maze([-0.85, -0.85], [-0.45, 0.8], FLAGS.eps, FLAGS.obstacle)
+            env = Maze(start_arr, end_arr, FLAGS.eps, FLAGS.obstacle)
         elif FLAGS.datasource == 'reacher':
             env = Reacher([0.7, 0.5], FLAGS.eps)
         else:
