@@ -41,7 +41,8 @@ flags.DEFINE_integer('batch_size', 256, 'Size of inputs')
 flags.DEFINE_integer('data_workers', 6, 'Number of different data workers to load data in parallel')
 
 flags.DEFINE_string('model', 'ebm', 'ebm or ff')
-flags.DEFINE_bool('pretrain_eval', False, 'either evaluate from pretraining dataset or from online dataset (since there are discrepancies)')
+flags.DEFINE_bool('pretrain_eval', False,
+                  'either evaluate from pretraining dataset or from online dataset (since there are discrepancies)')
 
 # General Experiment Seittings
 flags.DEFINE_string('logdir', 'cachedir', 'location where log of experiments will be stored')
@@ -412,7 +413,7 @@ def construct_no_cond_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_
         idyn_model = TrajInverseDynamics(dim_output=FLAGS.action_dim, dim_input=FLAGS.latent_dim)
         weights = idyn_model.construct_weights(scope="inverse_dynamics", weights=weights)
         batch_size = tf.shape(x_joint)[0]
-        pair_states = tf.concat([x_joint[:, i:i+2] for i in range(FLAGS.plan_steps)], axis=0)
+        pair_states = tf.concat([x_joint[:, i:i + 2] for i in range(FLAGS.plan_steps)], axis=0)
         actions = idyn_model.forward(pair_states, weights)
         actions = tf.transpose(tf.reshape(actions, (FLAGS.plan_steps, batch_size, FLAGS.action_dim)), (1, 0, 2))
 
@@ -548,36 +549,26 @@ def main():
         os.makedirs(logdir)
     logger = TensorBoardOutputFormat(logdir)
 
+    if FLAGS.model == "ebm":
+        model = TrajNetLatentFC(dim_input=FLAGS.latent_dim)
+    elif FLAGS.model == "ff":
+        model = TrajFFDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.latent_dim)
+
+    X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim),
+                             dtype=tf.float32)
+    X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
+    ACTION_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
+    ACTION_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps + 1, 2), dtype=tf.float32)
+
+    X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
+    X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
+
     if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze':
-        if FLAGS.model == "ebm":
-            model = TrajNetLatentFC(dim_input=FLAGS.latent_dim)
-        elif FLAGS.model == "ff":
-            model = TrajFFDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.latent_dim)
-
-        X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim),
-                                 dtype=tf.float32)
-        X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
-        ACTION_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
-        ACTION_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps + 1, 2), dtype=tf.float32)
-
-        X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
-        X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
         X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
     elif FLAGS.datasource == 'reacher':
-        if FLAGS.model == "ebm":
-            model = TrajNetLatentFC(dim_input=FLAGS.latent_dim)
-        elif FLAGS.model == "ff":
-            model = TrajFFDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.latent_dim)
-
-        X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim),
-                                 dtype=tf.float32)
-        X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
-        ACTION_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
-        ACTION_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps + 1, 2), dtype=tf.float32)
-
-        X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
-        X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
         X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, 2), dtype=tf.float32)
+    else:
+        raise AssertionError("Unsupported data source")
 
     if not FLAGS.cond:
         ACTION_LABEL = None

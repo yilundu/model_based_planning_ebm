@@ -24,6 +24,8 @@ from custom_adam import AdamOptimizer
 from utils import ReplayBuffer
 import seaborn as sns
 
+from envs import Point, Maze, Reacher
+
 sns.set()
 plt.rcParams["font.family"] = "Times New Roman"
 
@@ -39,6 +41,10 @@ flags.DEFINE_string('datasource', 'point', 'point or maze or reacher')
 flags.DEFINE_integer('batch_size', 256, 'Size of inputs')
 flags.DEFINE_bool('single', False, 'whether to train on a single task')
 flags.DEFINE_integer('data_workers', 6, 'Number of different data workers to load data in parallel')
+
+flags.DEFINE_string('model', 'ebm', 'ebm or ff')
+flags.DEFINE_bool('pretrain_eval', False,
+                  'either evaluate from pretraining dataset or from online dataset (since there are discrepancies)')
 
 # General Experiment Seittings
 flags.DEFINE_string('logdir', 'cachedir', 'location where log of experiments will be stored')
@@ -91,8 +97,21 @@ flags.DEFINE_string('objective', 'cd', 'objective used to train EBM')
 # Parameters for Planning 
 flags.DEFINE_integer('plan_steps', 10, 'Number of steps of planning')
 flags.DEFINE_bool('seq_plan', False, 'Whether to use joint planning or sequential planning')
-flags.DEFINE_bool('constraint_vel', False, 'A distance constraint between each subsequent state')
 flags.DEFINE_bool('anneal', False, 'Whether to use simulated annealing for sampling')
+
+# Parameters for benchmark experiments
+flags.DEFINE_integer('n_benchmark_exp', 0, 'Number of benchmark experiments')
+flags.DEFINE_float('start1', 0.0, 'x_start, x')
+flags.DEFINE_float('start2', 0.0, 'x_start, y')
+flags.DEFINE_float('end1', 0.5, 'x_end, x')
+flags.DEFINE_float('end2', 0.5, 'x_end, y')
+flags.DEFINE_float('eps', 0.01, 'epsilon for done condition')
+flags.DEFINE_list('obstacle', [0.5, 0.1, 0.1, 0.5],
+                  'a size 4 array specifying top left and bottom right, e.g. [0.25, 0.35, 0.3, 0.3]')
+
+# Additional constraints
+flags.DEFINE_bool('constraint_vel', False, 'A distance constraint between each subsequent state')
+flags.DEFINE_bool('constraint_goal', False, 'A distance constraint between current state and goal state')
 
 # use FF to train forward prediction rather than EBM
 flags.DEFINE_bool('ff_model', False, 'Run action conditional with a deterministic FF network')
@@ -112,6 +131,186 @@ elif FLAGS.datasource == 'maze':
 elif FLAGS.datasource == "reacher":
     FLAGS.latent_dim = 4
     FLAGS.action_dim = 2
+
+
+def log_step_num_exp(d):
+    import csv
+    with open('get_avg_step_num_log.csv', mode='a+') as csv_file:
+        fieldnames = ['ts', 'start', 'actual_end', 'end', 'obstacle', 'plan_steps', 'cond', 'step_num', 'exp', 'iter']
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writerow(d)
+
+
+def get_avg_step_num(target_vars, sess, env):
+    n_exp = FLAGS.n_benchmark_exp
+    cond = 'True' if FLAGS.cond else 'False'
+    collected_trajs = []
+
+    for i in range(n_exp):
+        points = []
+        length = 0
+        cum_rewards = []
+        cum_reward = 0
+        obs = env.reset()
+        start = obs
+        while True:
+            current_point = obs
+            end_point = env.end
+            X_START = target_vars['X_START']
+            X_END = target_vars['X_END']
+            X_PLAN = target_vars['X_PLAN']
+            x_joint = target_vars['x_joint']
+            output_actions = target_vars['actions']
+
+            x_start = current_point[None, None, None, :]
+            x_end = end_point[None, None, None, :]
+
+            x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, FLAGS.latent_dim))
+
+            if FLAGS.cond:
+                ACTION_PLAN = target_vars['ACTION_PLAN']
+                actions = np.random.uniform(-1.0, 1.0, (1, FLAGS.plan_steps + 1, 2))
+                x_joint, actions = sess.run([x_joint, output_actions],
+                                            {X_START: x_start, X_END: x_end,
+                                             X_PLAN: x_plan, ACTION_PLAN: actions})
+            else:
+                x_joint, output_actions = sess.run([x_joint, output_actions],
+                                                   {X_START: x_start, X_END: x_end, X_PLAN: x_plan})
+                # output_actions = output_actions[None, :, :]
+
+            kill = False
+
+            if FLAGS.cond:
+                for i in range(actions.shape[1] - 1):
+                    obs, reward, done, _ = env.step(actions[0, i, :])
+                    target_obs = x_joint[0, i + 1, 0]
+                    cum_reward += reward
+
+                    print("obs", obs)
+                    print("actions", actions[0, i, :])
+                    print("target_obs", target_obs)
+                    print("done?", done)
+                    points.append(obs)
+
+                    if done:
+                        kill = True
+                        break
+
+                    if np.abs(target_obs - obs).mean() > 0.55:
+                        break
+
+            else:
+                for i in range(output_actions.shape[1]):
+                    obs, reward, done, _ = env.step(output_actions[0, i, :])
+                    target_obs = x_joint[0, i + 1, 0]
+                    cum_reward += reward
+
+                    print("obs", obs)
+                    print("actions", output_actions[0, i, :])
+                    print("target_obs", target_obs)
+                    print("done?", done)
+                    points.append(obs)
+
+                    if done:
+                        kill = True
+                        break
+
+                    if np.abs(target_obs - obs).mean() > 0.55:
+                        print("replanning")
+                        break
+
+            print("done")
+
+            if kill:
+                break
+
+            # Only score environments for length equal to 1000
+            if FLAGS.score_reward and len(points) > 1000:
+                break
+
+        cum_rewards.append(cum_reward)
+
+        # log number of steps for each experiment
+        ts = str(datetime.datetime.now())
+        d = {'ts': ts,
+             'start': start,
+             'actual_end': x_start,
+             'end': x_end,
+             'obstacle': FLAGS.obstacle,
+             'cond': cond,
+             'plan_steps': FLAGS.plan_steps,
+             'step_num': len(points),
+             'exp': FLAGS.exp,
+             'iter': FLAGS.resume_iter}
+        log_step_num_exp(d)
+
+        collected_trajs.append(np.array(points))
+
+    imgdir = FLAGS.imgdir
+    if not osp.exists(imgdir):
+        os.makedirs(imgdir)
+
+    lengths = []
+
+    if FLAGS.score_reward:
+        print("Obtained an average reward of {} for {} runs on enviroment {}".format(np.mean(cum_rewards),
+                                                                                     FLAGS.n_benchmark_exp,
+                                                                                     FLAGS.datasource))
+
+    if FLAGS.log_traj:
+        for traj in collected_trajs:
+            traj = traj.squeeze()
+            if traj.ndim == 1:
+                traj = np.expand_dims(traj, 0)
+
+            # save one image for each trajectory
+            timestamp = str(datetime.datetime.now())
+
+            if FLAGS.obstacle != None:
+                xy = (FLAGS.obstacle[0], FLAGS.obstacle[-1])
+                w, h = FLAGS.obstacle[2] - FLAGS.obstacle[0], FLAGS.obstacle[1] - FLAGS.obstacle[3]
+
+                # create a Rectangle patch as obstacle
+                if FLAGS.datasource == "point":
+                    ax = plt.gca()  # get the current reference
+                    rect = patches.Rectangle(xy, w, h, linewidth=1, edgecolor='r', facecolor='none')
+                    ax.add_patch(rect)
+                elif FLAGS.datasource == "maze":
+                    # Plot the values of boundaries of the maze
+                    ax = plt.gca()
+                    rect = patches.Rectangle((-0.75, -1.0), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
+                    ax.add_patch(rect)
+                    rect = patches.Rectangle((-0.25, -0.75), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
+                    ax.add_patch(rect)
+                    rect = patches.Rectangle((0.25, -1.0), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
+                    ax.add_patch(rect)
+                    rect = patches.Rectangle((0.75, -0.75), 0.25, 1.75, linewidth=1, edgecolor='r', facecolor='none')
+                    ax.add_patch(rect)
+
+            plt.plot(traj[:, 0], traj[:, 1], color='green', alpha=0.3)
+
+            if FLAGS.save_single:
+                save_dir = osp.join(imgdir, 'test_{}_iter{}_{}.png'.format(FLAGS.exp, FLAGS.resume_iter, timestamp))
+                plt.savefig(save_dir)
+                plt.clf()
+
+            # save all length for calculation of average length
+            lengths.append(traj.shape[0])
+
+        if not FLAGS.save_single:
+            save_dir = osp.join(imgdir, 'benchmark_{}_{}_iter{}_{}'.format(FLAGS.n_benchmark_exp, FLAGS.exp,
+                                                                           FLAGS.resume_iter, timestamp))
+            if FLAGS.constraint_vel:
+                save_dir += "_vel"
+            if FLAGS.constraint_goal:
+                save_dir += "_goal"
+            save_dir += ".png"
+
+            plt.savefig(save_dir)
+            plt.clf()
+
+        average_length = sum(lengths) / len(lengths)
+        print("average number of steps:", average_length)
 
 
 def make_image(tensor):
@@ -517,6 +716,54 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
     return target_vars
 
 
+def construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, target_vars={}):
+    actions = ACTION_PLAN
+    steps = tf.constant(0)
+    c = lambda i, x, y: tf.less(i, FLAGS.num_steps)
+
+    def mcmc_step(counter, actions, x_vals):
+        actions = actions + tf.random_normal(tf.shape(actions), mean=0.0, stddev=0.01)
+
+        x_val = X_START
+        x_vals = []
+        for i in range(FLAGS.plan_steps + 1):
+            x_val = model.forward(x_val, weights, action_label=actions[:, i])
+            x_vals.append(x_val)
+
+        x_vals = tf.stack(x_vals, axis=1)
+
+        if FLAGS.anneal:
+            anneal_val = tf.cast(counter, tf.float32) / FLAGS.num_steps
+        else:
+            anneal_val = 1
+
+        print(x_val.get_shape())
+        if FLAGS.datasource == "reacher":
+            energy = tf.reduce_sum(tf.square(x_val[:, :2] - X_END[:, 0, 0]))
+        else:
+            energy = tf.reduce_sum(tf.square(x_val - X_END[:, 0, 0]))
+
+        action_grad = tf.gradients(energy, [actions])[0]
+        actions = actions - FLAGS.step_lr * anneal_val * action_grad
+        actions = tf.clip_by_value(actions, -1.0, 1.0)
+
+        counter = counter + 1
+
+        return counter, actions, x_vals
+
+    steps, actions, x_joint = tf.while_loop(c, mcmc_step,
+                                            (steps, actions, tf.concat([X_START, X_PLAN], axis=1)[:, :, 0]))
+
+    target_vars['x_joint'] = tf.expand_dims(x_joint, axis=2)
+    target_vars['actions'] = actions
+    target_vars['X_START'] = X_START
+    target_vars['X_END'] = X_END
+    target_vars['X_PLAN'] = X_PLAN
+    target_vars['ACTION_PLAN'] = ACTION_PLAN
+
+    return target_vars
+
+
 def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, LR, optimizer):
     target_vars = {}
     x_mods = []
@@ -739,7 +986,11 @@ def main():
     logger = TensorBoardOutputFormat(logdir)
 
     if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze' or FLAGS.datasource == 'reacher':
-        model = TrajNetLatentFC(dim_input=FLAGS.latent_dim)
+        if FLAGS.model == "ebm":
+            model = TrajNetLatentFC(dim_input=FLAGS.latent_dim)
+        elif FLAGS.model == "ff":
+            model = TrajFFDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.latent_dim)
+
         X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim),
                                  dtype=tf.float32)
         X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
@@ -750,11 +1001,22 @@ def main():
 
         X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
         X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
-        X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
+
+        if FLAGS.datasource == 'reacher':
+            X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, 2), dtype=tf.float32)
+        else:
+            X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
     else:
         raise AssertionError("Unsupported data source")
 
-    weights = model.construct_weights(action_size=FLAGS.action_dim)
+    if not FLAGS.cond:
+        ACTION_LABEL = None
+
+    if FLAGS.model == "ff" and FLAGS.pretrain_eval:
+        weights = model.construct_weights(action_size=FLAGS.action_dim, scope="ff_model")
+    else:
+        weights = model.construct_weights(action_size=FLAGS.action_dim)
+
     LR = tf.placeholder(tf.float32, [])
     optimizer = AdamOptimizer(LR, beta1=0.0, beta2=0.999)
 
@@ -762,7 +1024,12 @@ def main():
         target_vars = construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, LR, optimizer)
     else:
         # evaluation
-        target_vars = construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, FLAGS.ff_model)
+        if FLAGS.model == "ebm":
+            target_vars = construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, FLAGS.cond)
+        elif FLAGS.model == "ff":
+            target_vars = construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN)
+        else:
+            raise AssertionError("Unsupported model type")
 
     sess = tf.InteractiveSession()
     saver = tf.train.Saver(max_to_keep=10, keep_checkpoint_every_n_hours=2)
@@ -788,55 +1055,72 @@ def main():
         resume_itr = FLAGS.resume_iter
         saver.restore(sess, model_file)
 
-    if FLAGS.datasource == 'point':
-        dataset = np.load('point.npz')['obs'][:, :, None, :]
-        actions = np.load('point.npz')['action']
-        mean, std = 0, 1
-    elif FLAGS.datasource == 'maze':
-        dataset = np.load('maze.npz')['obs'][:, :, None, :]
-        actions = np.load('maze.npz')['action']
-        mean, std = 0, 1
-    elif FLAGS.datasource == "reacher":
-        dataset = np.load('reacher.npz')['obs'][:, :, None, :]
-        actions = np.load('reacher.npz')['action']
-        dones = np.load('reacher.npz')['action']
+    if FLAGS.n_benchmark_exp > 0:
+        # perform benchmark experiments (originally in pipeline.py)
+        start_arr = [FLAGS.start1, FLAGS.start2]
+        end_arr = [FLAGS.end1, FLAGS.end2]
 
-        dataset[:, :, :, :2] = dataset[:, :, :, :2] % (2 * np.pi)
-        s = dataset.shape
+        if FLAGS.datasource == 'point':
+            env = Point(start_arr, end_arr, FLAGS.eps, FLAGS.obstacle)
+        elif FLAGS.datasource == 'maze':
+            env = Maze([-0.85, -0.85], [-0.45, 0.8], FLAGS.eps, FLAGS.obstacle)
+        elif FLAGS.datasource == 'reacher':
+            env = Reacher([0.7, 0.5], FLAGS.eps)
+        else:
+            raise KeyError
 
-        dataset[:, :, :, :2] = (dataset[:, :, :, :2] - np.pi) / np.pi
-        dataset[:, :, :, 2:] = dataset[:, :, :, 2:] / 10.0
+        get_avg_step_num(target_vars, sess, env)
 
-        # dataset_flat = dataset.reshape((-1, FLAGS.latent_dim))
-        # dataset = dataset / 55.
-        # mean, std = dataset_flat.mean(axis=0), dataset_flat.std(axis=0)
-        # std = std + 1e-5
-        # dataset = (dataset - mean) / std
-        print(dataset.max(), dataset.min())
-
-        # For now a hacky way to deal with dones since each episode is always of length 50
-        dataset = np.concatenate([dataset[:, 49:99], dataset[:, [99] + list(range(49))]], axis=0)
-        actions = np.concatenate([actions[:, 49:99], actions[:, [99] + list(range(49))]], axis=0)
     else:
-        raise AssertionError("Unsupported data source")
+        if FLAGS.datasource == 'point':
+            dataset = np.load('point.npz')['obs'][:, :, None, :]
+            actions = np.load('point.npz')['action']
+            mean, std = 0, 1
+        elif FLAGS.datasource == 'maze':
+            dataset = np.load('maze.npz')['obs'][:, :, None, :]
+            actions = np.load('maze.npz')['action']
+            mean, std = 0, 1
+        elif FLAGS.datasource == "reacher":
+            dataset = np.load('reacher.npz')['obs'][:, :, None, :]
+            actions = np.load('reacher.npz')['action']
+            dones = np.load('reacher.npz')['action']
 
-    if FLAGS.single:
-        dataset = np.tile(dataset[0:1], (100, 1, 1, 1))[:, :20]
+            dataset[:, :, :, :2] = dataset[:, :, :, :2] % (2 * np.pi)
+            s = dataset.shape
 
-    split_idx = int(dataset.shape[0] * 0.9)
+            dataset[:, :, :, :2] = (dataset[:, :, :, :2] - np.pi) / np.pi
+            dataset[:, :, :, 2:] = dataset[:, :, :, 2:] / 10.0
 
-    dataset_train = dataset[:split_idx]
-    actions_train = actions[:split_idx]
-    dataset_test = dataset[split_idx:]
-    actions_test = actions[split_idx:]
+            # dataset_flat = dataset.reshape((-1, FLAGS.latent_dim))
+            # dataset = dataset / 55.
+            # mean, std = dataset_flat.mean(axis=0), dataset_flat.std(axis=0)
+            # std = std + 1e-5
+            # dataset = (dataset - mean) / std
+            print(dataset.max(), dataset.min())
 
-    if FLAGS.train:
-        train(target_vars, saver, sess, logger, dataset_train, actions_train, resume_itr)
+            # For now a hacky way to deal with dones since each episode is always of length 50
+            dataset = np.concatenate([dataset[:, 49:99], dataset[:, [99] + list(range(49))]], axis=0)
+            actions = np.concatenate([actions[:, 49:99], actions[:, [99] + list(range(49))]], axis=0)
+        else:
+            raise AssertionError("Unsupported data source")
 
-    if FLAGS.debug:
-        debug(target_vars, sess)
-    else:
-        test(target_vars, saver, sess, logdir, dataset_test, actions_test, dataset_train, mean, std)
+        if FLAGS.single:
+            dataset = np.tile(dataset[0:1], (100, 1, 1, 1))[:, :20]
+
+        split_idx = int(dataset.shape[0] * 0.9)
+
+        dataset_train = dataset[:split_idx]
+        actions_train = actions[:split_idx]
+        dataset_test = dataset[split_idx:]
+        actions_test = actions[split_idx:]
+
+        if FLAGS.train:
+            train(target_vars, saver, sess, logger, dataset_train, actions_train, resume_itr)
+
+        if FLAGS.debug:
+            debug(target_vars, sess)
+        else:
+            test(target_vars, saver, sess, logdir, dataset_test, actions_test, dataset_train, mean, std)
 
 
 if __name__ == "__main__":
