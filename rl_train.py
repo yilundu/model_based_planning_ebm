@@ -22,7 +22,7 @@ flags.DEFINE_string('datasource', 'point', 'point or maze')
 flags.DEFINE_string('exp', 'rl_default', 'name of experiment')
 flags.DEFINE_integer('num_env', 128, 'batch size and number of planning steps')
 flags.DEFINE_string('logdir', 'cachedir', 'location where log of rl experiments will be stored')
-flags.DEFINE_string('model', 'ebm', 'ebm or ff')
+flags.DEFINE_bool('ff_model', False, 'Run action conditional with a deterministic FF network')
 flags.DEFINE_bool('train', True, 'whether to train with environmental interaction or not')
 flags.DEFINE_bool('debug', False, 'print out outputs of information')
 flags.DEFINE_bool('random_action', False, 'do random actions')
@@ -35,13 +35,14 @@ flags.DEFINE_integer('seed', 0, 'Value of seed')
 flags.DEFINE_bool('heatmap', False, 'Visualize the heatmap in environments')
 
 # Architecture Settings
-flags.DEFINE_integer('num_filters', 64, 'number of filters for networks')
 flags.DEFINE_integer('latent_dim', 24, 'Number of dimension encoding state of object')
 flags.DEFINE_integer('action_dim', 24, 'Number of dimension for encoding action of object')
 flags.DEFINE_integer('input_objects', 1, 'Number of objects to predict the trajectory of.')
 flags.DEFINE_bool('spec_norm', True, 'Whether to use spectral normalization on weights')
-flags.DEFINE_bool('fast_goal', False, 'Try to reach the goal quicly')
-flags.DEFINE_bool('v_penalty', False, 'Penalty for distance between two points')
+
+# Additional constraints
+flags.DEFINE_bool('constraint_vel', False, 'A distance constraint between each subsequent state')
+flags.DEFINE_bool('constraint_goal', False, 'A distance constraint between current state and goal state')
 
 # EBM settings
 flags.DEFINE_integer('num_steps', 0, 'Steps of gradient descent for training')
@@ -49,7 +50,6 @@ flags.DEFINE_integer('total_frame', 2, 'Number of frames to use')
 flags.DEFINE_bool('replay_batch', True, 'Whether to use a replay buffer for samples')
 flags.DEFINE_bool('cond', False, 'Whether to condition on actions')
 flags.DEFINE_integer('temperature', 1, 'Temperature for energy function')
-flags.DEFINE_bool('inverse_dynamics', True, 'Whether to train a inverse dynamics model')
 flags.DEFINE_bool('gt_inverse_dynamics', False, 'Whether to train a inverse dynamics model')
 flags.DEFINE_integer('num_plan_steps', 50, 'Steps of planning')
 
@@ -182,7 +182,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         feed_dict = {X: ob_pair, X_NOISE: x_noise_neg, ACTION_NOISE: action_noise_neg, ACTION_LABEL: action}
 
         batch_size = x_noise_neg.shape[0]
-        if FLAGS.replay_batch and len(replay_buffer) > batch_size and FLAGS.model == 'ebm':
+        if FLAGS.replay_batch and len(replay_buffer) > batch_size and not FLAGS.ff_model:
             replay_batch = replay_buffer.sample(int(batch_size / 2.))
             # replay_mask = (np.random.uniform(0, 1, (batch_size)) > 0.95)
             # feed_dict[X_NOISE][replay_mask] = replay_batch[replay_mask]
@@ -300,10 +300,10 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, ta
         if FLAGS.debug:
             cum_energies = tf.Print(cum_energies, [cum_energies], message="energy")
 
-        if FLAGS.fast_goal:
+        if FLAGS.constraint_goal:
             cum_energies = cum_energies + 0.001 * tf.reduce_mean(tf.square(x_joint - X_END), axis=[1, 2, 3])
 
-        if FLAGS.v_penalty:
+        if FLAGS.constraint_vel:
             cum_energies = cum_energies + 0.001 * tf.reduce_mean(tf.square(x_joint[:, 1:] - x_joint[:, :-1]),
                                                                  axis=[1, 2, 3])
 
@@ -382,7 +382,7 @@ def construct_ff_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LA
     gvs = capped_gvs
     train_op = optimizer.apply_gradients(gvs)
 
-    if FLAGS.inverse_dynamics:
+    if not FLAGS.gt_inverse_dynamics:
         train_op = tf.group(train_op, dyn_train_op)
 
     target_vars['train_op'] = train_op
@@ -421,7 +421,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
     x_grads = []
     x_ees = []
 
-    if FLAGS.inverse_dynamics:
+    if not FLAGS.gt_inverse_dynamics:
         dyn_model = TrajInverseDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.action_dim)
         weights = dyn_model.construct_weights(scope="inverse_dynamics", weights=weights)
 
@@ -478,7 +478,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
         loss_total = loss_total + \
                      (tf.reduce_mean(tf.square(energy_pos)) + tf.reduce_mean(tf.square((energy_neg))))
 
-    if FLAGS.inverse_dynamics:
+    if not FLAGS.gt_inverse_dynamics:
         output_action = dyn_model.forward(X, weights)
         dyn_loss = tf.reduce_mean(tf.square(output_action - ACTION_LABEL))
         dyn_dist = tf.reduce_mean(tf.abs(output_action - ACTION_LABEL))
@@ -506,7 +506,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
         gvs = capped_gvs
         train_op = optimizer.apply_gradients(gvs)
 
-        if FLAGS.inverse_dynamics:
+        if not FLAGS.gt_inverse_dynamics:
             train_op = tf.group(train_op, dyn_train_op)
 
         target_vars['train_op'] = train_op
@@ -559,43 +559,38 @@ def main():
 
     env = SubprocVecEnv([make_env(i + FLAGS.seed) for i in range(FLAGS.num_env)])
 
-    if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze':
-        if FLAGS.model == "ebm":
-            model = TrajNetLatentFC(dim_input=FLAGS.latent_dim)
-        elif FLAGS.model == "ff":
+    if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze' or FLAGS.datasource == 'reacher':
+        if FLAGS.ff_model:
             model = TrajFFDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.latent_dim)
+        else:
+            model = TrajNetLatentFC(dim_input=FLAGS.latent_dim)
+
         X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim),
                                  dtype=tf.float32)
         X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
 
-        ACTION_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
+        if FLAGS.cond:
+            ACTION_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
+        else:
+            ACTION_LABEL = None
+
         ACTION_NOISE_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
-        ACTION_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, 2), dtype=tf.float32)
+        ACTION_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps + 1, 2), dtype=tf.float32)
 
         X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
         X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
-        X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
-    elif FLAGS.datasource == 'reacher':
-        if FLAGS.model == "ebm":
-            model = TrajNetLatentFC(dim_input=FLAGS.latent_dim)
-        elif FLAGS.model == "ff":
-            model = TrajFFDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.latent_dim)
-        X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim),
-                                 dtype=tf.float32)
-        X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
 
-        ACTION_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
-        ACTION_NOISE_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
-        ACTION_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, 2), dtype=tf.float32)
-
-        X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
-        X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
-        X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, 2), dtype=tf.float32)
+        if FLAGS.datasource == 'reacher':
+            X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, 2), dtype=tf.float32)
+        else:
+            X_END = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
+    else:
+        raise AssertionError("Unsupported data source")
 
     weights = model.construct_weights(action_size=FLAGS.action_dim)
     optimizer = AdamOptimizer(1e-2, beta1=0.0, beta2=0.999)
 
-    if FLAGS.model == "ff":
+    if FLAGS.ff_model:
         target_vars = construct_ff_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, optimizer)
         target_vars = construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN,
                                               target_vars=target_vars)
