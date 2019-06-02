@@ -16,6 +16,9 @@ flags.DEFINE_float('spec_norm_val', 1.0, 'Desired norm of matrices')
 flags.DEFINE_bool('downsample', False, 'Wheter to do average pool downsampling')
 flags.DEFINE_bool('spec_eval', False, 'Set to true to prevent spectral updates')
 
+def safemean(xs):
+    return np.nan if len(xs) == 0 else np.mean(xs)
+
 
 def make_image(tensor):
     """Convert an numpy representation image to Image protobuf"""

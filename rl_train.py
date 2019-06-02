@@ -14,7 +14,7 @@ from tensorflow.python.platform import flags
 from custom_adam import AdamOptimizer
 from envs import Point, Maze, Reacher
 from traj_model import TrajNetLatentFC, TrajInverseDynamics, TrajFFDynamics
-from utils import ReplayBuffer, parse_valid_obs
+from utils import ReplayBuffer, parse_valid_obs, safemean
 
 FLAGS = flags.FLAGS
 
@@ -69,10 +69,6 @@ elif FLAGS.datasource == "reacher":
     FLAGS.action_dim = 2
 
 
-def safemean(xs):
-    return np.nan if len(xs) == 0 else np.mean(xs)
-
-
 def train(target_vars, saver, sess, logger, resume_iter, env):
     tot_iter = int(FLAGS.nsteps // FLAGS.num_env)
 
@@ -119,7 +115,8 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
         else:
             x_end = np.tile(np.array([[0.5, 0.5]]), (FLAGS.num_env, 1))[:, None, None, :]
 
-        x_traj, traj_actions = sess.run([x_joint, actions], {X_START: ob, X_PLAN: x_plan, X_END: x_end, ACTION_PLAN: action_plan})
+        x_traj, traj_actions = sess.run([x_joint, actions],
+                                        {X_START: ob, X_PLAN: x_plan, X_END: x_end, ACTION_PLAN: action_plan})
 
         # Add some amount of exploration into predicted actions
         # traj_actions = traj_actions + np.random.uniform(-0.1, 0.1, traj_actions.shape)
@@ -141,7 +138,7 @@ def train(target_vars, saver, sess, logger, resume_iter, env):
 
             if i == 0:
                 print(x_traj[0, 0], x_traj[0, 1], ob[0])
-                target_ob = x_traj[:, i+1]
+                target_ob = x_traj[:, i + 1]
                 print("Abs dist: ", np.mean(np.abs(ob - target_ob)))
 
             dones.append(done)
