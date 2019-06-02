@@ -15,13 +15,12 @@ from traj_model import TrajFFDynamics, TrajInverseDynamics, TrajNetLatentFC
 
 mpl.use('Agg')
 import matplotlib.pyplot as plt
-from tensorflow.core.util import event_pb2
 import torch
 import numpy as np
 from itertools import product
 from custom_adam import AdamOptimizer
 # from render_utils import render_reach
-from utils import ReplayBuffer
+from utils import ReplayBuffer, log_step_num_exp
 import seaborn as sns
 
 from envs import Point, Maze, Reacher
@@ -119,14 +118,6 @@ elif FLAGS.datasource == "reacher":
     FLAGS.action_dim = 2
 
 
-def log_step_num_exp(d):
-    import csv
-    with open('get_avg_step_num_log.csv', mode='a+') as csv_file:
-        fieldnames = ['ts', 'start', 'actual_end', 'end', 'obstacle', 'plan_steps', 'cond', 'step_num', 'exp', 'iter']
-        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-        writer.writerow(d)
-
-
 def get_avg_step_num(target_vars, sess, env):
     n_exp = FLAGS.n_benchmark_exp
     cond = 'True' if FLAGS.cond else 'False'
@@ -134,7 +125,6 @@ def get_avg_step_num(target_vars, sess, env):
 
     for i in range(n_exp):
         points = []
-        length = 0
         cum_rewards = []
         cum_reward = 0
         obs = env.reset()
@@ -297,49 +287,6 @@ def get_avg_step_num(target_vars, sess, env):
 
         average_length = sum(lengths) / len(lengths)
         print("average number of steps:", average_length)
-
-
-def make_image(tensor):
-    """Convert an numpy representation image to Image protobuf"""
-    from PIL import Image
-    if len(tensor.shape) == 4:
-        _, height, width, channel = tensor.shape
-    elif len(tensor.shape) == 3:
-        height, width, channel = tensor.shape
-    elif len(tensor.shape) == 2:
-        height, width = tensor.shape
-        channel = 1
-    image = Image.fromarray(tensor)
-    import io
-    output = io.BytesIO()
-    image.save(output, format='PNG')
-    image_string = output.getvalue()
-    output.close()
-    return tf.Summary.Image(height=height,
-                            width=width,
-                            colorspace=channel,
-                            encoded_image_string=image_string)
-
-
-def compute_lr(itr):
-    frac = min((itr + 100) / 300, 1)
-    return frac * FLAGS.lr
-
-
-def log_image(im, logger, tag, step=0):
-    im = make_image(im)
-
-    summary = [tf.Summary.Value(tag=tag, image=im)]
-    summary = tf.Summary(value=summary)
-    event = event_pb2.Event(summary=summary)
-    event.step = step
-    logger.writer.WriteEvent(event)
-    logger.writer.Flush()
-
-
-def rescale_im(image):
-    image = np.clip(image, 0, 1)
-    return (image * 255).astype(np.uint8)
 
 
 def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):

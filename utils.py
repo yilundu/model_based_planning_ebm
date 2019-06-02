@@ -7,6 +7,7 @@ import numpy as np
 import tensorflow as tf
 from scipy import linalg
 from tensorflow.contrib.layers.python import layers as tf_layers
+from tensorflow.core.util import event_pb2
 from tensorflow.python.platform import flags
 
 FLAGS = flags.FLAGS
@@ -14,6 +15,57 @@ flags.DEFINE_integer('spec_iter', 1, 'Number of iterations to normalize spectrum
 flags.DEFINE_float('spec_norm_val', 1.0, 'Desired norm of matrices')
 flags.DEFINE_bool('downsample', False, 'Wheter to do average pool downsampling')
 flags.DEFINE_bool('spec_eval', False, 'Set to true to prevent spectral updates')
+
+
+def make_image(tensor):
+    """Convert an numpy representation image to Image protobuf"""
+    from PIL import Image
+    if len(tensor.shape) == 4:
+        _, height, width, channel = tensor.shape
+    elif len(tensor.shape) == 3:
+        height, width, channel = tensor.shape
+    elif len(tensor.shape) == 2:
+        height, width = tensor.shape
+        channel = 1
+    image = Image.fromarray(tensor)
+    import io
+    output = io.BytesIO()
+    image.save(output, format='PNG')
+    image_string = output.getvalue()
+    output.close()
+    return tf.Summary.Image(height=height,
+                            width=width,
+                            colorspace=channel,
+                            encoded_image_string=image_string)
+
+
+def log_image(im, logger, tag, step=0):
+    im = make_image(im)
+
+    summary = [tf.Summary.Value(tag=tag, image=im)]
+    summary = tf.Summary(value=summary)
+    event = event_pb2.Event(summary=summary)
+    event.step = step
+    logger.writer.WriteEvent(event)
+    logger.writer.Flush()
+
+
+def rescale_im(image):
+    image = np.clip(image, 0, 1)
+    return (image * 255).astype(np.uint8)
+
+
+def compute_lr(itr, lr):
+    frac = min((itr + 100) / 300, 1)
+    return frac * lr
+
+
+def log_step_num_exp(d):
+    import csv
+    with open('get_avg_step_num_log.csv', mode='a+') as csv_file:
+        fieldnames = list(d.keys())
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writerow(d)
 
 
 def parse_valid_obs(obs, actions, dones):
