@@ -42,7 +42,6 @@ flags.DEFINE_integer('batch_size', 256, 'Size of inputs')
 flags.DEFINE_bool('single', False, 'whether to train on a single task')
 flags.DEFINE_integer('data_workers', 6, 'Number of different data workers to load data in parallel')
 
-flags.DEFINE_string('model', 'ebm', 'ebm or ff')
 flags.DEFINE_bool('pretrain_eval', False,
                   'either evaluate from pretraining dataset or from online dataset (since there are discrepancies)')
 
@@ -986,10 +985,10 @@ def main():
     logger = TensorBoardOutputFormat(logdir)
 
     if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze' or FLAGS.datasource == 'reacher':
-        if FLAGS.model == "ebm":
-            model = TrajNetLatentFC(dim_input=FLAGS.latent_dim)
-        elif FLAGS.model == "ff":
+        if FLAGS.ff_model:
             model = TrajFFDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.latent_dim)
+        else:
+            model = TrajNetLatentFC(dim_input=FLAGS.latent_dim)
 
         X_NOISE = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim),
                                  dtype=tf.float32)
@@ -1012,7 +1011,7 @@ def main():
     if not FLAGS.cond:
         ACTION_LABEL = None
 
-    if FLAGS.model == "ff" and FLAGS.pretrain_eval:
+    if FLAGS.ff_model and FLAGS.pretrain_eval:
         weights = model.construct_weights(action_size=FLAGS.action_dim, scope="ff_model")
     else:
         weights = model.construct_weights(action_size=FLAGS.action_dim)
@@ -1024,12 +1023,10 @@ def main():
         target_vars = construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, LR, optimizer)
     else:
         # evaluation
-        if FLAGS.model == "ebm":
-            target_vars = construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, FLAGS.cond)
-        elif FLAGS.model == "ff":
+        if FLAGS.ff_model:
             target_vars = construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN)
         else:
-            raise AssertionError("Unsupported model type")
+            target_vars = construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, FLAGS.cond)
 
     sess = tf.InteractiveSession()
     saver = tf.train.Saver(max_to_keep=10, keep_checkpoint_every_n_hours=2)
