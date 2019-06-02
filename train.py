@@ -112,6 +112,9 @@ flags.DEFINE_list('obstacle', [0.5, 0.1, 0.1, 0.5],
 flags.DEFINE_bool('constraint_vel', False, 'A distance constraint between each subsequent state')
 flags.DEFINE_bool('constraint_goal', False, 'A distance constraint between current state and goal state')
 
+flags.DEFINE_bool('gt_inverse_dynamics', True, 'Whether to train a inverse dynamics model')
+flags.DEFINE_bool('inverse_dynamics', False, 'Whether to train a inverse dynamics model')
+
 # use FF to train forward prediction rather than EBM
 flags.DEFINE_bool('ff_model', False, 'Run action conditional with a deterministic FF network')
 
@@ -587,7 +590,7 @@ def debug(target_vars, sess):
 
 
 def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, cond=False):
-    x_joint = tf.concat([X_START, X_PLAN, X_END], axis=1)
+    x_joint = tf.concat([X_START, X_PLAN], axis=1)
     steps = tf.constant(0)
 
     if cond:
@@ -600,7 +603,7 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
         actions = actions + tf.random_normal(tf.shape(actions), mean=0.0, stddev=0.01)
         x_joint = x_joint + tf.random_normal(tf.shape(x_joint), mean=0.0, stddev=0.01)
         cum_energies = 0
-        for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
+        for i in range(FLAGS.plan_steps - FLAGS.total_frame + 2):
             cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=actions[:, i])
             cum_energies = cum_energies + cum_energy
 
@@ -610,6 +613,23 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
             anneal_val = tf.cast(counter, tf.float32) / FLAGS.num_steps
         else:
             anneal_val = 1
+
+        if FLAGS.constraint_vel:
+            # weight should be adjusted accordingly
+            cum_energies = cum_energies + 0.0001 * tf.reduce_sum(tf.square(x_joint[:, 1:] - x_joint[:, :-1]))
+
+        if FLAGS.constraint_goal:
+            # weight should be adjusted accordingly
+            cum_energies = cum_energies + 0.1 * tf.reduce_sum(tf.square(x_joint - X_END))
+
+        # L2 distance goal specification
+        # weight should be adjusted accordingly
+        if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
+            cum_energies = cum_energies + tf.reduce_mean(tf.square(x_joint[:, -1:] - X_END), axis=[1, 2, 3])
+        elif FLAGS.datasource == "reacher":
+            cum_energies = cum_energies + tf.reduce_mean(tf.square(x_joint[:, -1:, :, :2] - X_END), axis=[1, 2, 3])
+        else:
+            raise AssertionError("Unsupported data source")
 
         x_grad, action_grad = tf.gradients(cum_energies, [x_joint, actions])
         x_joint = x_joint - FLAGS.step_lr * anneal_val * x_grad
@@ -681,7 +701,21 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
             cum_energies = tf.reduce_sum(tf.concat(cum_energies, axis=1), axis=1)
 
             if FLAGS.constraint_vel:
+                # weight should be adjusted accordingly
                 cum_energies = cum_energies + 0.0001 * tf.reduce_sum(tf.square(x_joint[:, 1:] - x_joint[:, :-1]))
+
+            if FLAGS.constraint_goal:
+                # weight should be adjusted accordingly
+                cum_energies = cum_energies + 0.1 * tf.reduce_sum(tf.square(x_joint - X_END))
+
+            # L2 distance goal specification
+            # weight should be adjusted accordingly
+            if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
+                cum_energies = cum_energies + tf.reduce_mean(tf.square(x_joint[:, -1:] - X_END), axis=[1, 2, 3])
+            elif FLAGS.datasource == "reacher":
+                cum_energies = cum_energies + tf.reduce_mean(tf.square(x_joint[:, -1:, :, :2] - X_END), axis=[1, 2, 3])
+            else:
+                raise AssertionError("Unsupported data source")
 
             x_grad = tf.gradients(cum_energies, [x_joint])[0]
             x_joint = x_joint - FLAGS.step_lr * anneal_val * x_grad
@@ -702,10 +736,23 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
 
     if cond:
         steps, x_joint, actions = tf.while_loop(c, mcmc_step_cond, (steps, x_joint, actions))
-        target_vars['actions'] = actions
+
     else:
         steps, x_joint = tf.while_loop(c, mcmc_step_no_cond, (steps, x_joint))
 
+        if FLAGS.gt_inverse_dynamics and FLAGS.datasource != "reacher":
+            actions = tf.clip_by_value(20.0 * (x_joint[:, 1:, 0] - x_joint[:, :-1, 0]), -1.0, 1.0)
+        elif FLAGS.inverse_dynamics:
+            idyn_model = TrajInverseDynamics(dim_output=FLAGS.action_dim, dim_input=FLAGS.latent_dim)
+            weights = idyn_model.construct_weights(scope="inverse_dynamics", weights=weights)
+            batch_size = tf.shape(x_joint)[0]
+            pair_states = tf.concat([x_joint[:, i:i + 2] for i in range(FLAGS.plan_steps)], axis=0)
+            actions = idyn_model.forward(pair_states, weights)
+            actions = tf.transpose(tf.reshape(actions, (FLAGS.plan_steps, batch_size, FLAGS.action_dim)), (1, 0, 2))
+
+        print("actions shape ", actions.get_shape())
+
+    target_vars['actions'] = actions
     target_vars['x_joint'] = x_joint
     target_vars['X_START'] = X_START
     target_vars['X_END'] = X_END
