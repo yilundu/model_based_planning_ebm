@@ -5,6 +5,7 @@ import matplotlib
 import numpy as np
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
 from tqdm import tqdm
+from utils import is_maze_valid
 
 matplotlib.use('Agg')
 
@@ -151,24 +152,6 @@ def gen_simple():
 
 def oob(x):
     return (x < -1) | (x > 1)
-
-
-def is_maze_valid(dat):
-    # Generate an indicator function for whether a point is valid in a hand designed
-    # maze given dat (n x 2) array of data_points
-
-    segs = 4
-    oob_mask = np.any(oob(dat), axis=1)
-    # dat = dat[~data_mask]
-
-    dat_idx = ((dat[:, 0] + 1) * segs).astype(np.int32)
-
-    data_mask = ((dat_idx % 2) == 0) | (((dat_idx % 4) == 1) & (dat[:, 1] > 0.7)) | (
-            ((dat_idx % 4) == 3) & (dat[:, 1] < -0.7))
-
-    comb_mask = (~oob_mask) & data_mask
-
-    return comb_mask
 
 
 def gen_maze():

@@ -56,7 +56,6 @@ flags.DEFINE_bool('debug', False, 'debug what is going on for conditional models
 flags.DEFINE_integer('epoch_num', 10, 'Number of Epochs to train on')
 flags.DEFINE_float('lr', 1e-3, 'Learning for training')
 flags.DEFINE_bool('heatmap', False, 'Visualize the heatmap in environments')
-flags.DEFINE_integer('num_env', 128, 'batch size and number of planning steps')
 
 # Custom Experiments Settings
 flags.DEFINE_integer('num_gpus', 1, 'number of gpus to train on')
@@ -75,6 +74,7 @@ flags.DEFINE_integer('total_frame', 2, 'Number of frames to train the energy mod
 flags.DEFINE_bool('replay_batch', True, 'Whether to use a replay buffer for samples')
 flags.DEFINE_bool('cond', False, 'Whether to condition on actions')
 flags.DEFINE_bool('zero_kl', True, 'whether to make the kl be zero')
+flags.DEFINE_bool('spec_norm', True, 'spectral norm for the networks')
 flags.DEFINE_integer('temperature', 1, 'Temperature for energy function')
 
 # Custom MCMC parameters
@@ -104,10 +104,17 @@ flags.DEFINE_bool('constraint_goal', False, 'A distance constraint between curre
 
 flags.DEFINE_bool('gt_inverse_dynamics', True, 'if True, use GT dynamics; if False, train a inverse dynamics model')
 
+# Constraints for RL training only
+flags.DEFINE_bool('random_action', True, 'instead of using the modeling to predict actions, use random actions instead')
+
 # use FF to train forward prediction rather than EBM
 flags.DEFINE_bool('ff_model', False, 'Run action conditional with a deterministic FF network')
 
+# Hyperparameters for RL training
 flags.DEFINE_bool('rl_train', False, 'If true, run rl_train() instead of train()')
+flags.DEFINE_integer('seed', 1, 'Seed to use when running environments')
+flags.DEFINE_integer('nsteps', int(1e7), 'Total of steps of the environment to run')
+flags.DEFINE_integer('num_env', 128, 'Number of different environments to run in parallel')
 
 flags.DEFINE_integer('n_exp', 1, 'Number of tests run for training and testing')
 
@@ -315,16 +322,16 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
     actions = target_vars['actions']
     energy_pos = target_vars['energy_pos']
     energy_neg = target_vars['energy_neg']
-    loss_total = target_vars['loss_total']
+    loss_total = target_vars['total_loss']
     dyn_loss = target_vars['dyn_loss']
     dyn_dist = target_vars['dyn_dist']
+    LR = target_vars['lr']
 
     ob = env.reset()[:, None, None, :]
 
     output = [train_op, x_mod]
     log_output = [train_op, dyn_loss, dyn_dist, energy_pos, energy_neg, loss_ml, loss_total, x_grad, action_grad, x_mod]
 
-    print(log_output)
     replay_buffer = ReplayBuffer(1000000)
     pos_replay_buffer = ReplayBuffer(1000000)
 
@@ -342,7 +349,7 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
             x_end = np.tile(np.array([[0.5, 0.5]]), (FLAGS.num_env, 1))[:, None, None, :]
 
         x_traj, traj_actions = sess.run([x_joint, actions],
-                                        {X_START: ob, X_PLAN: x_plan, X_END: x_end, ACTION_PLAN: action_plan})
+                {X_START: ob, X_PLAN: x_plan, X_END: x_end, ACTION_PLAN: action_plan})
 
         # Add some amount of exploration into predicted actions
         # traj_actions = traj_actions + np.random.uniform(-0.1, 0.1, traj_actions.shape)
@@ -405,7 +412,10 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
             ob_pair = np.concatenate([ob_pair, sample_ob], axis=0)
             action = np.concatenate([action, sample_actions], axis=0)
 
-        feed_dict = {X: ob_pair, X_NOISE: x_noise_neg, ACTION_NOISE: action_noise_neg, ACTION_LABEL: action}
+        feed_dict = {X: ob_pair, X_NOISE: x_noise_neg, ACTION_NOISE: action_noise_neg, LR: FLAGS.lr}
+
+        if ACTION_LABEL is not None:
+            feed_dict[ACTION_LABEL] = action
 
         batch_size = x_noise_neg.shape[0]
         if FLAGS.replay_batch and len(replay_buffer) > batch_size and not FLAGS.ff_model:
@@ -511,8 +521,9 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
 
             feed_dict = {X: label_i, X_NOISE: data_corrupt, lr: FLAGS.lr}
 
-            feed_dict[ACTION_LABEL] = actions[perm_idx[i:i + FLAGS.batch_size], j - FLAGS.total_frame + 1]
-            feed_dict[ACTION_NOISE_LABEL] = np.random.uniform(-1.2, 1.2, (FLAGS.batch_size, 2))
+            if ACTION_LABEL is not None:
+                feed_dict[ACTION_LABEL] = actions[perm_idx[i:i + FLAGS.batch_size], j - FLAGS.total_frame + 1]
+                feed_dict[ACTION_NOISE_LABEL] = np.random.uniform(-1.2, 1.2, (FLAGS.batch_size, 2))
 
             # print("Action label", feed_dict[ACTION_LABEL][0])
             # print("Action noise label", feed_dict[ACTION_NOISE_LABEL][0])
@@ -687,7 +698,7 @@ def debug(target_vars, sess):
     plt.savefig("cmap.png")
 
 
-def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, cond=False):
+def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, cond=False, target_vars={}):
     x_joint = tf.concat([X_START, X_PLAN], axis=1)
     steps = tf.constant(0)
 
@@ -705,7 +716,7 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
             cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=actions[:, i])
             cum_energies = cum_energies + cum_energy
 
-        cum_energies = tf.Print(cum_energies, [cum_energies], message="energies")
+        # cum_energies = tf.Print(cum_energies, [cum_energies], message="energies")
 
         if FLAGS.anneal:
             anneal_val = tf.cast(counter, tf.float32) / FLAGS.num_steps
@@ -756,51 +767,22 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
         # Code for doing sampling for beginning to end and then from end to beginning
         cum_energies = []
 
-        if FLAGS.seq_plan:
-            for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
-                x_temp = x_joint[:, i:i + FLAGS.total_frame]
-                x_temp = x_temp + tf.random_normal(tf.shape(x_temp), mean=0.0, stddev=0.1)
-                cum_energy = model.forward(x_temp, weights, action_label=ACTION_LABEL)
-                x_grad = tf.gradients(cum_energy, [x_temp])[0]
-                x_new = x_joint[:, i:i + FLAGS.total_frame] - FLAGS.step_lr * tf.cast(counter,
-                                                                                      tf.float32) / FLAGS.num_steps * x_grad
+        x_joint = x_joint + tf.random_normal(tf.shape(x_joint), mean=0.0, stddev=0.01)
+        for i in range(FLAGS.plan_steps - FLAGS.total_frame + 2):
+            x_temp = x_joint[:, i:i + FLAGS.total_frame]
+            cum_energy = model.forward(x_temp, weights, action_label=ACTION_LABEL)
+            cum_energies.append(cum_energy)
 
-                x_joint = tf.concat([x_joint[:, :i], x_new, x_joint[:, i + FLAGS.total_frame:]], axis=1)
-
-                cum_energies.append(cum_energy)
-
-            x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
-
-            for i in range(FLAGS.plan_steps - FLAGS.total_frame + 2, -1):
-                x_temp = x_joint[:, i:i + FLAGS.total_frame]
-                x_temp = x_temp + tf.random_normal(tf.shape(x_temp), mean=0.0, stddev=0.1)
-                cum_energy = model.forward(x_temp, weights, action_label=ACTION_LABEL)
-                x_grad = tf.gradients(cum_energy, [x_temp])[0]
-
-                x_new = x_joint[:, i:i + FLAGS.total_frame] - FLAGS.step_lr * tf.cast(counter,
-                                                                                      tf.float32) / FLAGS.num_steps * x_grad
-                x_joint = tf.concat([x_joint[:, :i], x_new, x_joint[:, i + FLAGS.total_frame:]], axis=1)
-
-                cum_energies.append(cum_energy)
-
-            cum_energies = tf.concat(cum_energies, axis=1)
+        if FLAGS.anneal:
+            anneal_val = tf.cast(counter, tf.float32) / FLAGS.num_steps
         else:
-            x_joint = x_joint + tf.random_normal(tf.shape(x_joint), mean=0.0, stddev=0.01)
-            for i in range(FLAGS.plan_steps - FLAGS.total_frame + 3):
-                x_temp = x_joint[:, i:i + FLAGS.total_frame]
-                cum_energy = model.forward(x_temp, weights, action_label=ACTION_LABEL)
-                cum_energies.append(cum_energy)
+            anneal_val = 1
 
-            if FLAGS.anneal:
-                anneal_val = tf.cast(counter, tf.float32) / FLAGS.num_steps
-            else:
-                anneal_val = 1
+        cum_energies = tf.reduce_sum(tf.concat(cum_energies, axis=1), axis=1)
 
-            cum_energies = tf.reduce_sum(tf.concat(cum_energies, axis=1), axis=1)
-
-            if FLAGS.constraint_vel:
-                # weight should be adjusted accordingly
-                cum_energies = cum_energies + 0.0001 * tf.reduce_sum(tf.square(x_joint[:, 1:] - x_joint[:, :-1]))
+        if FLAGS.constraint_vel:
+            # weight should be adjusted accordingly
+            cum_energies = cum_energies + 0.0001 * tf.reduce_sum(tf.square(x_joint[:, 1:] - x_joint[:, :-1]))
 
             if FLAGS.constraint_goal:
                 # weight should be adjusted accordingly
@@ -819,7 +801,7 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
             x_joint = x_joint - FLAGS.step_lr * anneal_val * x_grad
 
         # Reset the start and end states to be previous values
-        x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1], X_END], axis=1)
+        x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1]], axis=1)
         counter = counter + 1
 
         counter = tf.Print(counter,
@@ -829,8 +811,6 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
             x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
 
         return counter, x_joint
-
-    target_vars = {}
 
     if cond:
         steps, x_joint, actions = tf.while_loop(c, mcmc_step_cond, (steps, x_joint, actions))
@@ -855,7 +835,7 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
     target_vars['X_START'] = X_START
     target_vars['X_END'] = X_END
     target_vars['X_PLAN'] = X_PLAN
-    target_vars['ACTION_LABEL'] = ACTION_LABEL
+    target_vars['ACTION_PLAN'] = ACTION_LABEL
 
     return target_vars
 
@@ -1044,7 +1024,6 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
 
         return counter, x_mod, action_label
 
-    print(ACTION_NOISE_LABEL.get_shape(), ACTION_LABEL.get_shape())
     steps, x_mod, action_label = tf.while_loop(c, mcmc_step, (steps, x_mod, ACTION_NOISE_LABEL))
     # action_label = tf.Print(action_label, [action_label], "action label (HELP ME)")
 
@@ -1202,7 +1181,7 @@ def main():
             ACTION_LABEL = None
 
         ACTION_NOISE_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
-        ACTION_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps + 1, 2), dtype=tf.float32)
+        ACTION_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, 2), dtype=tf.float32)
 
         X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
         X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
@@ -1219,21 +1198,27 @@ def main():
     else:
         weights = model.construct_weights(action_size=FLAGS.action_dim)
 
-    LR = tf.placeholder(tf.float32, [])
+    LR = tf.placeholder(shape=(), dtype=tf.float32)
     optimizer = AdamOptimizer(LR, beta1=0.0, beta2=0.999)
+
+    target_vars = {}
 
     if FLAGS.train or FLAGS.debug:
         if FLAGS.ff_model:
             target_vars = construct_ff_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, optimizer)
         else:
             target_vars = construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, LR, optimizer)
-    else:
+
+    print(target_vars.keys())
+
+    if not FLAGS.train or FLAGS.rl_train:
         # evaluation
         if FLAGS.ff_model:
-            target_vars = construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN)
+            target_vars = construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, target_vars=target_vars)
         else:
-            target_vars = construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, FLAGS.cond)
+            target_vars = construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, FLAGS.cond, target_vars=target_vars)
 
+    print(target_vars.keys())
     sess = tf.InteractiveSession()
     saver = tf.train.Saver(max_to_keep=10, keep_checkpoint_every_n_hours=2)
 
@@ -1297,17 +1282,17 @@ def main():
 
         else:
             if FLAGS.datasource == 'point':
-                dataset = np.load('point.npz')['obs'][:, :, None, :]
-                actions = np.load('point.npz')['action']
+                dataset = np.load('data/point.npz')['obs'][:, :, None, :]
+                actions = np.load('data/point.npz')['action']
                 mean, std = 0, 1
             elif FLAGS.datasource == 'maze':
-                dataset = np.load('maze.npz')['obs'][:, :, None, :]
-                actions = np.load('maze.npz')['action']
+                dataset = np.load('data/maze.npz')['obs'][:, :, None, :]
+                actions = np.load('data/maze.npz')['action']
                 mean, std = 0, 1
             elif FLAGS.datasource == "reacher":
-                dataset = np.load('reacher.npz')['obs'][:, :, None, :]
-                actions = np.load('reacher.npz')['action']
-                dones = np.load('reacher.npz')['action']
+                dataset = np.load('data/reacher.npz')['obs'][:, :, None, :]
+                actions = np.load('data/reacher.npz')['action']
+                dones = np.load('data/reacher.npz')['action']
 
                 dataset[:, :, :, :2] = dataset[:, :, :, :2] % (2 * np.pi)
                 s = dataset.shape

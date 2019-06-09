@@ -3,7 +3,7 @@ from collections import namedtuple
 import gym
 import numpy as np
 
-from gen_data import is_maze_valid
+from utils import is_maze_valid
 
 Rectangle = namedtuple('Rectangle', 'xmin ymin xmax ymax')
 
