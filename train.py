@@ -62,7 +62,8 @@ flags.DEFINE_integer('num_gpus', 1, 'number of gpus to train on')
 flags.DEFINE_float('ml_coeff', 1.0, 'Coefficient to multiply maximum likelihood (descriminator coefficient)')
 flags.DEFINE_float('l2_coeff', 1.0, 'Scale of regularization')
 
-flags.DEFINE_integer('num_steps', 20, 'Steps of gradient descent for training')
+flags.DEFINE_integer('num_steps', 0, 'Steps of gradient descent for training ebm')
+flags.DEFINE_integer('num_plan_steps', 20, 'Steps of gradient descent for generating plans')
 
 # Architecture Settings
 flags.DEFINE_integer('input_objects', 1, 'Number of objects to predict the trajectory of.')
@@ -105,7 +106,7 @@ flags.DEFINE_bool('constraint_goal', False, 'A distance constraint between curre
 flags.DEFINE_bool('gt_inverse_dynamics', True, 'if True, use GT dynamics; if False, train a inverse dynamics model')
 
 # Constraints for RL training only
-flags.DEFINE_bool('random_action', True, 'instead of using the modeling to predict actions, use random actions instead')
+flags.DEFINE_bool('random_action', False, 'instead of using the modeling to predict actions, use random actions instead')
 
 # use FF to train forward prediction rather than EBM
 flags.DEFINE_bool('ff_model', False, 'Run action conditional with a deterministic FF network')
@@ -338,9 +339,14 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
     epinfos = []
     points = []
     total_obs = []
+
+    x_plan = np.random.uniform(-1.0, 1.0, (FLAGS.num_env, FLAGS.plan_steps, 1, FLAGS.latent_dim))
+    action_plan = np.random.uniform(-1, 1, (FLAGS.num_env, FLAGS.plan_steps, 2))
+
     for itr in range(resume_iter, tot_iter):
-        x_plan = np.random.uniform(-1.0, 1.0, (FLAGS.num_env, FLAGS.plan_steps, 1, FLAGS.latent_dim))
-        action_plan = np.random.uniform(-1, 1, (FLAGS.num_env, FLAGS.plan_steps, 2))
+        x_plan = np.concatenate([x_plan[:, 1:], x_plan[:, -1:]], axis=1)
+        action_plan = np.concatenate([action_plan[:, 1:], action_plan[:, -1:]], axis=1)
+
         if FLAGS.datasource == "maze":
             x_end = np.tile(np.array([[0.7, -0.8]]), (FLAGS.num_env, 1))[:, None, None, :]
         elif FLAGS.datasource == "reacher":
@@ -361,7 +367,7 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
         obs = [ob[:, 0, 0, :]]
         dones = []
         diffs = []
-        for i in range(traj_actions.shape[1] - 1):
+        for i in range(1):
             if FLAGS.random_action:
                 action = np.random.uniform(-1, 1, traj_actions[:, i].shape)
             else:
@@ -371,7 +377,7 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
 
             if i == 0:
                 print(x_traj[0, 0], x_traj[0, 1], ob[0])
-                target_ob = x_traj[:, i + 1]
+                target_ob = x_traj[:, i + 1, 0]
                 print("Abs dist: ", np.mean(np.abs(ob - target_ob)))
 
             dones.append(done)
@@ -381,7 +387,10 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
                 maybeepinfo = info.get('episode')
                 if maybeepinfo: epinfos.append(maybeepinfo)
 
-            diffs.append(np.abs(x_traj[:, i + 1] - ob).mean())
+            # print(x_traj.shape)
+            # print(ob.shape)
+            # assert False
+            diffs.append(np.abs(x_traj[:, i + 1, 0] - ob).mean())
 
         ob = ob[:, None, None, :]
         dones = np.array(dones).transpose()
@@ -392,11 +401,11 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
 
         action, ob_pair = parse_valid_obs(obs, traj_actions, dones)
 
-        # x_noise = np.stack([x_traj[:, :-1], x_traj[:, 1:]], axis=2)
-        x_noise = np.stack([x_traj[:, :10], x_traj[:, 1:11]], axis=2)
+        # For now only encode the first negative transition
+        x_noise = np.stack([x_traj[:, :1], x_traj[:, 1:2]], axis=2)
         s = x_noise.shape
         x_noise_neg = x_noise.reshape((s[0] * s[1], s[2], s[3], s[4]))
-        action_noise_neg = traj_actions[:, :-1]
+        action_noise_neg = traj_actions[:, :11]
         s = action_noise_neg.shape
         action_noise_neg = action_noise_neg.reshape((s[0] * s[1], s[2]))
 
@@ -438,7 +447,7 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
             kvs['dyn_dist'] = np.abs(dyn_dist).mean()
             kvs['iter'] = itr
             kvs["train_episode_length_mean"] = safemean([epinfo['l'] for epinfo in epinfos])
-            kvs["diffs"] = diffs[-1]
+            kvs["diffs"] = diffs[0]
 
             epinfos = []
 
@@ -458,7 +467,7 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
         if itr % FLAGS.save_interval == 0:
             saver.save(sess, osp.join(FLAGS.logdir, FLAGS.exp, 'model_{}'.format(itr)))
 
-        if FLAGS.heatmap and itr == 100:
+        if FLAGS.heatmap and itr == 2000:
             total_obs = np.concatenate(total_obs, axis=0)
             # total_obs = total_obs[np.random.permutation(total_obs.shape[0])[:1000000]]
             sns.kdeplot(data=total_obs[:, 0], data2=total_obs[:, 1], shade=True)
@@ -704,9 +713,9 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
 
     if cond:
         actions = ACTION_LABEL
-        c = lambda i, x, y: tf.less(i, FLAGS.num_steps)
+        c = lambda i, x, y: tf.less(i, FLAGS.num_plan_steps)
     else:
-        c = lambda i, x: tf.less(i, FLAGS.num_steps)
+        c = lambda i, x: tf.less(i, FLAGS.num_plan_steps)
 
     def mcmc_step_cond(counter, x_joint, actions):
         actions = actions + tf.random_normal(tf.shape(actions), mean=0.0, stddev=0.01)
@@ -719,7 +728,7 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
         # cum_energies = tf.Print(cum_energies, [cum_energies], message="energies")
 
         if FLAGS.anneal:
-            anneal_val = tf.cast(counter, tf.float32) / FLAGS.num_steps
+            anneal_val = tf.cast(counter, tf.float32) / FLAGS.num_plan_steps
         else:
             anneal_val = 1
 
@@ -774,7 +783,7 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
             cum_energies.append(cum_energy)
 
         if FLAGS.anneal:
-            anneal_val = tf.cast(counter, tf.float32) / FLAGS.num_steps
+            anneal_val = tf.cast(counter, tf.float32) / FLAGS.num_plan_steps
         else:
             anneal_val = 1
 
@@ -804,8 +813,8 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
         x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1]], axis=1)
         counter = counter + 1
 
-        counter = tf.Print(counter,
-                           [tf.reduce_mean(cum_energies), tf.reduce_max(cum_energies), tf.reduce_min(cum_energies)])
+        # counter = tf.Print(counter,
+        #                    [tf.reduce_mean(cum_energies), tf.reduce_max(cum_energies), tf.reduce_min(cum_energies)])
 
         if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
             x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
@@ -1244,14 +1253,16 @@ def main():
         saver.restore(sess, model_file)
 
     if FLAGS.rl_train:
+
+        datasource = FLAGS.datasource
         def make_env(rank):
             def _thunk():
                 # Make the environments non stoppable for now
-                if FLAGS.datasource == "maze":
+                if datasource == "maze":
                     env = Maze(end=[0.7, -0.8], start=[-0.85, -0.85], random_starts=False)
-                elif FLAGS.datasource == "point":
+                elif datasource == "point":
                     env = Point(end=[0.5, 0.5], start=[0.0, 0.0], random_starts=True)
-                elif FLAGS.datasource == "reacher":
+                elif datasource == "reacher":
                     env = Reacher(end=[0.7, 0.5], eps=0.01)
                 env.seed(rank)
                 env = Monitor(env, os.path.join("/tmp", str(rank)), allow_early_resets=True)
