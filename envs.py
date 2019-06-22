@@ -134,6 +134,110 @@ class Maze(gym.Env):
         np.random.seed(seed)
 
 
+class Ball(gym.Env):
+    def __init__(self, start=[0.1, 0.1], end=[1.0, 1.0], a=[0.0, 0.0], eps=0.05, cor=1.0, random_starts=False):
+        self.start = np.array(start)
+        self.end = np.end(end)
+        self.current = np.array(start)
+        self.random_starts = random_starts
+
+        # range of container
+        self.low = 0.0
+        self.high = 1.0
+
+        # initial velocity
+        self.v = np.array([0.0, 0.0])
+
+        # random acceleration; a physical parameter to be inferred
+        self.a = np.array(a)
+
+        # coefficient of restitution, delta v'/ delta v; a physical parameter to be inferred
+        self.cor = cor
+
+        self.eps = eps
+
+    def reset(self):
+        if self.random_starts:
+            self.current = np.random.uniform(-1, 1, (2))
+        else:
+            self.current = self.start
+
+        print("Reset ball position to: ", self.current)
+
+        return self.current
+
+    def collide(self, current, action):
+        # free movement for one time step
+        print("Start position", current)
+        print("Start velocity", action)
+
+        action += self.a   # add random force (~air resistance/wind)
+
+        end = []
+
+        # check for collisions with container's wall
+        for i, vi in list(zip(current, action)):
+            if i <= self.low:
+                i = -i
+                vi = -vi
+                vi *= self.cor
+            elif i >= self.high:
+                i = 2 * self.high - i
+                vi = -vi
+                vi *= self.cor
+            else:
+                pass
+
+            end.append((i, vi))
+
+        # unzip
+        current, v = zip(*end)
+
+        print("Final position", current)
+        print("Final velocity", v)
+
+        self.v = v
+
+        # return updated position
+        return current
+
+    def move(self):
+        # step without action
+        start = self.current
+
+        self.current, self.v = self.collide(self.current, self.v)
+
+        # calculate the "action" (i.e. reverse dynamics)
+        action = self.current - start
+
+        return action
+
+    def step(self, action):
+        # Scale down action from range (-1, 1) to (-0.05, 0.05)
+        action = action / max(np.abs(action).max(), 1)
+        action = action / 20.
+        reward = 0
+        info = {}
+
+        # action = np.clip(action, -0.05, 0.05)
+        self.current = self.collide(self.current, action)
+
+        dist = np.abs(self.current - self.end).sum()
+        reward = -1 * dist
+
+        if dist < self.eps:
+            done = True
+        else:
+            done = False
+
+        observation = self.current
+
+        return observation, reward, done, info
+
+    def seed(self, seed):
+        np.random.seed(seed)
+
+
 class Reacher(gym.Env):
     def __init__(self, end=[0.7, 0.5], eps=0.01, pretrain_eval=False):
         self.env = gym.make("Reacher-v2")
