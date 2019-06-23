@@ -23,6 +23,7 @@ class Point(gym.Env):
         else:
             self.current = self.start
         # print("Reset ", self.current)
+        self.counter = 0
         return self.current
 
     def is_overlapping(self, a, b):  # returns None if rectangles don't intersect
@@ -48,10 +49,10 @@ class Point(gym.Env):
             return True
 
     def step(self, action):
+        self.counter += 1
         # Scale down action from range (-1, 1) to (-0.05, 0.05)
         action = action / max(np.abs(action).max(), 1)
         action = action / 20.
-        reward = 0
         info = {}
 
         # action = np.clip(action, -0.05, 0.05)
@@ -70,7 +71,12 @@ class Point(gym.Env):
         dist = np.abs(self.current - self.end).sum()
         reward = -1 * dist
 
-        if dist < self.eps:
+        # if dist < self.eps:
+        #     done = True
+        # else:
+        #     done = False
+
+        if self.counter > 1000:
             done = True
         else:
             done = False

@@ -72,7 +72,7 @@ class TrajNetLatent(object):
                 weights[k] = tf.stop_gradient(v)
 
         joint_shape = tf.shape(joint)
-        joint_compact = tf.reshape(joint, (joint_shape[0] * FLAGS.input_objects * joint_shape[1], joint_shape[3]))
+        joint_compact = inp
         joint_compact = act(tf.matmul(joint_compact, weights['w_upscale']) + weights['b_upscale'])
 
         if action_label is not None and FLAGS.cond:
@@ -164,12 +164,12 @@ class TrajInverseDynamics(object):
         self.dim_output = dim_output
         self.dim_input = dim_input
 
-    def construct_weights(self, scope='', weights={}):
+    def construct_weights(self, scope='', weights={}, reuse=False):
         dtype = tf.float32
         conv_initializer = tf.contrib.layers.xavier_initializer_conv2d(dtype=dtype)
         fc_initializer = tf.contrib.layers.xavier_initializer(dtype=dtype)
 
-        with tf.variable_scope(scope):
+        with tf.variable_scope(scope, reuse=reuse):
             weights['inv_w1'] = get_weight('w1',
                                        [FLAGS.input_objects * self.dim_input * (FLAGS.total_frame),
                                         self.dim_hidden], spec_norm=False)

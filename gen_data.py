@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-save_path', type=str, default='./data/')
-parser.add_argument('--data_type', choices=['simple', 'maze', 'reacher', 'fetch'])
+parser.add_argument('--data_type', choices=['simple', 'maze', 'reacher', 'fetch', 'continual_reacher'])
 
 args = parser.parse_args()
 
@@ -137,6 +137,54 @@ def gen_reacher():
     np.savez(args.save_path + "reacher.npz", obs=trajs, action=actions, dones=dones)
 
 
+def gen_continual_reacher():
+    # generate data from Reacher-v2 environment
+    def make_fetch_env(rank):
+        def _thunk():
+            env = ContinualReacher7DOFEnv()
+            env.seed(rank)
+            return env
+
+        return _thunk
+
+    start_index = 0
+    num_env = 128
+
+    env = SubprocVecEnv([make_fetch_env(i + start_index) for i in range(num_env)])
+
+    trajs = []
+    actions = []
+    dones = []
+
+    for i in tqdm(range(1000)):
+        traj = []
+        obs = env.reset()
+        action = np.random.uniform(-1., 1., (num_env, 100, 7))
+        time_dones = []
+
+        for t in range(100):
+            ob, _, done, _, = env.step(action[:, t])
+            traj.append(ob)
+            time_dones.append(done)
+
+        time_dones = np.array(time_dones)
+
+        traj = np.stack(traj, axis=1)
+
+        trajs.append(traj)
+        actions.append(action)
+        dones.append(time_dones)
+
+    dones = np.concatenate(dones, axis=0)
+
+    trajs = np.concatenate(trajs, axis=0)
+    actions = np.concatenate(actions, axis=0)
+
+    print(trajs.shape)
+    print(actions.shape)
+    np.savez(args.save_path + "reacher_continual.npz", obs=trajs, action=actions, dones=dones)
+
+
 def gen_simple():
     # Free form movement on entire unit square from -1 to 1
     batch_size = 1000000
@@ -150,8 +198,6 @@ def gen_simple():
     np.savez(args.save_path + "point.npz", obs=total_traj, action=action * 20.)
 
 
-def oob(x):
-    return (x < -1) | (x > 1)
 
 
 def gen_maze():
@@ -193,5 +239,7 @@ if __name__ == "__main__":
         gen_reacher()
     elif args.data_type == 'fetch':
         gen_fetch()
+    elif args.data_type == 'continual_reacher':
+        gen_continual_reacher()
     else:
         raise AssertionError('Invalid data type')

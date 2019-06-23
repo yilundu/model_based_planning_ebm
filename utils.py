@@ -87,10 +87,13 @@ def parse_valid_obs(obs, actions, dones):
                 t_obs.append(pair_obs)
                 t_actions.append(action)
 
-    t_actions = np.array(t_actions)
-    t_obs = np.array(t_obs)
+    if len(t_obs) == 0:
+        return None, None
+    else:
+        t_actions = np.array(t_actions)
+        t_obs = np.array(t_obs)
 
-    return t_actions, t_obs
+        return t_actions, t_obs
 
 
 def get_median(v):
@@ -941,3 +944,7 @@ def is_maze_valid(dat):
     comb_mask = (~oob_mask) & data_mask
 
     return comb_mask
+
+
+def oob(x):
+    return (x < -1) | (x > 1)
