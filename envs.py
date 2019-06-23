@@ -137,7 +137,7 @@ class Maze(gym.Env):
 class Ball(gym.Env):
     def __init__(self, start=[0.1, 0.1], end=[1.0, 1.0], a=[0.0, 0.0], eps=0.05, cor=1.0, random_starts=False):
         self.start = np.array(start)
-        self.end = np.end(end)
+        self.end = np.array(end)
         self.current = np.array(start)
         self.random_starts = random_starts
 
@@ -158,7 +158,7 @@ class Ball(gym.Env):
 
     def reset(self):
         if self.random_starts:
-            self.current = np.random.uniform(-1, 1, (2))
+            self.current = np.random.uniform(0.0, 1.0, (2))
         else:
             self.current = self.start
 
@@ -168,8 +168,9 @@ class Ball(gym.Env):
 
     def collide(self, current, action):
         # free movement for one time step
-        print("Start position", current)
-        print("Start velocity", action)
+
+        # print("Start position", current)
+        # print("Start velocity", action)
 
         action += self.a   # add random force (~air resistance/wind)
 
@@ -192,9 +193,11 @@ class Ball(gym.Env):
 
         # unzip
         current, v = zip(*end)
+        current = np.array(current)
+        v = np.array(v)
 
-        print("Final position", current)
-        print("Final velocity", v)
+        # print("Final position", current)
+        # print("Final velocity", v)
 
         self.v = v
 
