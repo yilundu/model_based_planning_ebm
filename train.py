@@ -607,7 +607,7 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, s
 
     n = FLAGS.n_exp
 
-    if FLAGS.datasource == "point":
+    if FLAGS.datasource == "point" or FLAGS.datasource == 'phy_a' or FLAGS.datasource == 'phy_cor':
         x_start0, x_start1 = 0.0, 0.0
         x_end0, x_end1 = 1.0, 1.0
         x_start = np.array([x_start0, x_start1])[None, None, None, :]
@@ -693,6 +693,25 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, s
 
         save_file = osp.join(imgdir, 'test_exp{}_iter{}_{}.gif'.format(FLAGS.exp, FLAGS.resume_iter, timestamp))
         imageio.mimwrite(save_file, ims)
+
+    elif FLAGS.datasource == 'phy_a':
+        xs, ys, ps = [], [], []
+        for i in range(n):
+            x_joint_i = x_joint[i]
+            x, y, p = zip(*list(x_joint_i.squeeze()))
+            xs.append(x)
+            ys.append(y)
+            ps.append(p)
+            print("phy param", p)
+
+            plt.plot(x, y, color='blue', alpha=0.1)
+
+        save_dir = osp.join(imgdir, 'test_phy_a.png'.format(FLAGS.exp, FLAGS.resume_iter, timestamp))
+        # plt.tight_layout()
+        plt.xlim(x_start0 - 0.5, x_end0 + 0.2)
+        plt.ylim(x_start1 - 0.5, x_end1 + 0.2)
+        plt.title("Plan steps = {}".format(FLAGS.plan_steps))
+        plt.savefig(save_dir)
 
 
 def debug(target_vars, sess):
@@ -1308,7 +1327,8 @@ def main():
             dataset = data['obs'][:, :, None, :]
             actions = data['action']
 
-            if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze':
+            if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze' \
+                    or FLAGS.datasource == 'phy_a' or FLAGS.datasource == 'phy_cor':
                 mean, std = 0, 1
             elif FLAGS.datasource == 'reacher':
                 dones = data['action']
@@ -1346,7 +1366,8 @@ def main():
 
             if FLAGS.debug:
                 debug(target_vars, sess)
-            else:
+
+            if not FLAGS.train:
                 test(target_vars, saver, sess, logdir, dataset_test, actions_test, dataset_train, mean, std)
 
 
