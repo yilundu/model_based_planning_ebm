@@ -192,10 +192,11 @@ def gen_phy(phy_type):
 
         del env
 
-    dones = np.concatenate(dones, axis=0)
-    trajs = np.concatenate(trajs, axis=0)
-    actions = np.concatenate(actions, axis=0)
+    dones = np.array(dones)
+    trajs = np.array(trajs)
+    actions = np.array(actions)
 
+    print("dones shape", dones.shape)
     print("trajs shape", trajs.shape)
     print("actions shape", actions.shape)
 
