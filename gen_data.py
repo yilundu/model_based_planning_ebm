@@ -160,18 +160,17 @@ def gen_phy(phy_type):
     trajs = []
     actions = []
     dones = []
-    phy_params = []
 
     for i in tqdm(range(batch_size)):
         # create a new environment
         if phy_type == "a":
             # vary environmental force
             phy_param = np.random.uniform(-0.05, 0.05, size=2)
-            env = Ball(a=phy_param, random_starts=True)
+            env = Ball(a=phy_param, random_starts=True, phy_type=phy_type)
         elif phy_type == "cor":
             # vary coefficient of restitution
             phy_param = np.random.uniform(0.0, 1.0)
-            env = Ball(cor=phy_param, random_starts=True)
+            env = Ball(cor=phy_param, random_starts=True, phy_type=phy_type)
 
         traj = []
         action = np.random.uniform(-1., 1., (traj_length, 2))
@@ -183,7 +182,6 @@ def gen_phy(phy_type):
             ob, _, done, _ = env.step(action[t])
             traj.append(ob)
             time_dones.append(done)
-            phy_params.append(phy_param)
 
         traj = np.array(traj)
         time_dones = np.array(time_dones)
@@ -197,13 +195,11 @@ def gen_phy(phy_type):
     dones = np.concatenate(dones, axis=0)
     trajs = np.concatenate(trajs, axis=0)
     actions = np.concatenate(actions, axis=0)
-    phy_params = np.array(phy_params)
 
     print("trajs shape", trajs.shape)
     print("actions shape", actions.shape)
-    print("phy_params shape", phy_params.shape)
 
-    np.savez(args.save_path + "phy_{}.npz".format(phy_type), obs=trajs, action=actions, dones=dones, phy_params=phy_params)
+    np.savez(args.save_path + "phy_{}.npz".format(phy_type), obs=trajs, action=actions, dones=dones)
 
 
 def oob(x):

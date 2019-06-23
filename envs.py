@@ -135,7 +135,7 @@ class Maze(gym.Env):
 
 
 class Ball(gym.Env):
-    def __init__(self, start=[0.1, 0.1], end=[1.0, 1.0], a=[0.0, 0.0], eps=0.05, cor=1.0, random_starts=False):
+    def __init__(self, start=[0.1, 0.1], end=[1.0, 1.0], a=[0.0, 0.0], eps=0.05, cor=1.0, random_starts=False, phy_type=None):
         self.start = np.array(start)
         self.end = np.array(end)
         self.current = np.array(start)
@@ -153,6 +153,8 @@ class Ball(gym.Env):
 
         # coefficient of restitution, delta v'/ delta v; a physical parameter to be inferred
         self.cor = cor
+
+        self.phy_type = phy_type
 
         self.eps = eps
 
@@ -234,6 +236,11 @@ class Ball(gym.Env):
             done = False
 
         observation = self.current
+
+        if self.phy_type == 'a':
+            observation = np.concatenate((observation, self.a))
+        elif self.phy_type == 'cor':
+            observation = np.concatenate((observation, self.cor))
 
         return observation, reward, done, info
 
