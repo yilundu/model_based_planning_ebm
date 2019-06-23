@@ -154,7 +154,7 @@ def gen_simple():
 
 def gen_phy(phy_type):
     # generate data for ball trajectories, with physical parameters
-    batch_size = 10
+    batch_size = 10000
     traj_length = 100
 
     trajs = []
