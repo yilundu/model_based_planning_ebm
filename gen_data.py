@@ -7,6 +7,7 @@ from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
 from tqdm import tqdm
 from envs import Ball
 from utils import is_maze_valid
+from trajopt.envs.continual_reacher_env import ContinualReacher7DOFEnv
 
 matplotlib.use('Agg')
 
@@ -200,8 +201,6 @@ def gen_simple():
     np.savez(args.save_path + "point.npz", obs=total_traj, action=action * 20.)
 
 
-<<<<<<< HEAD
-=======
 def gen_phy(phy_type):
     # generate data for ball trajectories, with physical parameters
     batch_size = 10000
@@ -251,11 +250,6 @@ def gen_phy(phy_type):
     print("actions shape", actions.shape)
 
     np.savez(args.save_path + "phy_{}.npz".format(phy_type), obs=trajs, action=actions, dones=dones)
-
-
-def oob(x):
-    return (x < -1) | (x > 1)
->>>>>>> d83ad48da98cc8782a0d7432294abaaed2ec5fdf
 
 
 def gen_maze():
