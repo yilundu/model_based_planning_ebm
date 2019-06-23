@@ -138,7 +138,6 @@ class Ball(gym.Env):
     def __init__(self, start=[0.1, 0.1], end=[1.0, 1.0], a=[0.0, 0.0], eps=0.05, cor=1.0, random_starts=False, phy_type=None):
         self.start = np.array(start)
         self.end = np.array(end)
-        self.current = np.array(start)
         self.random_starts = random_starts
 
         # range of container
@@ -155,12 +154,20 @@ class Ball(gym.Env):
         self.cor = cor
 
         self.phy_type = phy_type
+        if phy_type == 'a':
+            self.start = np.concatenate((self.start, self.a))
+            self.end = np.concatenate((self.end, self.a))
+        elif phy_type == 'cor':
+            self.start = np.append(self.start, self.cor)
+            self.end = np.append(self.end, self.cor)
+
+        self.current = self.start
 
         self.eps = eps
 
     def reset(self):
         if self.random_starts:
-            self.current = np.random.uniform(0.0, 1.0, (2))
+            self.current[:2] = np.random.uniform(0.0, 1.0, (2))
         else:
             self.current = self.start
 
@@ -225,9 +232,9 @@ class Ball(gym.Env):
         info = {}
 
         # action = np.clip(action, -0.05, 0.05)
-        self.current = self.collide(self.current, action)
+        self.current[:2] = self.collide(self.current[:2], action)
 
-        dist = np.abs(self.current - self.end).sum()
+        dist = np.abs(self.current[:2] - self.end[:2]).sum()
         reward = -1 * dist
 
         if dist < self.eps:
@@ -236,11 +243,6 @@ class Ball(gym.Env):
             done = False
 
         observation = self.current
-
-        if self.phy_type == 'a':
-            observation = np.concatenate((observation, self.a))
-        elif self.phy_type == 'cor':
-            observation = np.concatenate((observation, self.cor))
 
         return observation, reward, done, info
 
