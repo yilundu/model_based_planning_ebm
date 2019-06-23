@@ -25,8 +25,8 @@ from custom_adam import AdamOptimizer
 from utils import ReplayBuffer, log_step_num_exp, parse_valid_obs, safemean
 import seaborn as sns
 
-from envs import Point, Maze, Reacher
 from trajopt.envs.continual_reacher_env import ContinualReacher7DOFEnv
+from envs import Point, Maze, Reacher, Ball
 
 sns.set()
 plt.rcParams["font.family"] = "Times New Roman"
@@ -38,7 +38,7 @@ torch.manual_seed(1)
 FLAGS = flags.FLAGS
 
 # Dataset Options
-flags.DEFINE_string('datasource', 'point', 'point or maze or reacher')
+flags.DEFINE_string('datasource', 'point', 'point or maze or reacher or phy_a or phy_cor')
 flags.DEFINE_integer('batch_size', 256, 'Size of inputs')
 flags.DEFINE_bool('single_task', False, 'whether to train on a single task')
 
@@ -46,6 +46,7 @@ flags.DEFINE_bool('pretrain_eval', False,
                   'either evaluate from pretraining dataset or from online dataset (since there are discrepancies)')
 
 # General Experiment Seittings
+flags.DEFINE_string('datadir', './data/', 'location where data is stored')
 flags.DEFINE_string('logdir', 'cachedir', 'location where log of experiments will be stored')
 flags.DEFINE_string('imgdir', 'rollout_images', 'location where image results of experiments will be stored')
 flags.DEFINE_string('exp', 'default', 'name of experiments')
@@ -128,12 +129,18 @@ if FLAGS.datasource == 'point':
 elif FLAGS.datasource == 'maze':
     FLAGS.latent_dim = 2
     FLAGS.action_dim = 2
-elif FLAGS.datasource == "reacher":
+elif FLAGS.datasource == 'reacher':
     FLAGS.latent_dim = 4
     FLAGS.action_dim = 2
 elif FLAGS.datasource == "continual_reacher":
     FLAGS.latent_dim = 20
     FLAGS.action_dim = 7
+elif FLAGS.datasource == 'phy_a':
+    FLAGS.latent_dim = 4   # s1, s2, phy_param
+    FLAGS.action_dim = 2
+elif FLAGS.datasource == 'phy_cor':
+    FLAGS.latent_dim = 3  # s1, s2, phy_param
+    FLAGS.action_dim = 2
 
 if FLAGS.datasource == "reacher" or FLAGS.datasource == "continual_reacher":
     FLAGS.gt_inverse_dynamics = False
@@ -656,7 +663,7 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, s
 
     n = FLAGS.n_exp
 
-    if FLAGS.datasource == "point":
+    if FLAGS.datasource == "point" or FLAGS.datasource == 'phy_a' or FLAGS.datasource == 'phy_cor':
         x_start0, x_start1 = 0.0, 0.0
         x_end0, x_end1 = 1.0, 1.0
         x_start = np.array([x_start0, x_start1])[None, None, None, :]
@@ -742,6 +749,25 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, s
 
         save_file = osp.join(imgdir, 'test_exp{}_iter{}_{}.gif'.format(FLAGS.exp, FLAGS.resume_iter, timestamp))
         imageio.mimwrite(save_file, ims)
+
+    elif FLAGS.datasource == 'phy_a':
+        xs, ys, ps = [], [], []
+        for i in range(n):
+            x_joint_i = x_joint[i]
+            x, y, p = zip(*list(x_joint_i.squeeze()))
+            xs.append(x)
+            ys.append(y)
+            ps.append(p)
+            print("phy param", p)
+
+            plt.plot(x, y, color='blue', alpha=0.1)
+
+        save_dir = osp.join(imgdir, 'test_phy_a.png'.format(FLAGS.exp, FLAGS.resume_iter, timestamp))
+        # plt.tight_layout()
+        plt.xlim(x_start0 - 0.5, x_end0 + 0.2)
+        plt.ylim(x_start1 - 0.5, x_end1 + 0.2)
+        plt.title("Plan steps = {}".format(FLAGS.plan_steps))
+        plt.savefig(save_dir)
 
 
 def debug(target_vars, sess):
@@ -1226,7 +1252,8 @@ def main():
         os.makedirs(logdir)
     logger = TensorBoardOutputFormat(logdir)
 
-    if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze' or FLAGS.datasource == 'reacher' or FLAGS.datasource == "continual_reacher":
+    if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze' or FLAGS.datasource == 'reacher' or \
+            FLAGS.datasource == 'phy_a' or FLAGS.datasource == 'phy_cor' or FLAGS.datasource == "continual_reacher":
         if FLAGS.ff_model:
             model = TrajFFDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.latent_dim)
         else:
@@ -1339,24 +1366,25 @@ def main():
                 env = Maze(start_arr, end_arr, FLAGS.eps, FLAGS.obstacle)
             elif FLAGS.datasource == 'reacher':
                 env = Reacher([0.7, 0.5], FLAGS.eps)
+            elif FLAGS.datasource == 'phy_a':
+                env = Ball(a=[0.05, 0.05], random_starts=True, eps=FLAGS.eps)
+            elif FLAGS.datasource == 'phy_cor':
+                env = Ball(cor=0.5, random_starts=True, eps=FLAGS.eps)
             else:
                 raise KeyError
 
             get_avg_step_num(target_vars, sess, env)
 
         else:
-            if FLAGS.datasource == 'point':
-                dataset = np.load('data/point.npz')['obs'][:, :, None, :]
-                actions = np.load('data/point.npz')['action']
+            data = np.load(FLAGS.datadir + FLAGS.datasource + '.npz')
+            dataset = data['obs'][:, :, None, :]
+            actions = data['action']
+
+            if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze' \
+                    or FLAGS.datasource == 'phy_a' or FLAGS.datasource == 'phy_cor':
                 mean, std = 0, 1
-            elif FLAGS.datasource == 'maze':
-                dataset = np.load('data/maze.npz')['obs'][:, :, None, :]
-                actions = np.load('data/maze.npz')['action']
-                mean, std = 0, 1
-            elif FLAGS.datasource == "reacher":
-                dataset = np.load('data/reacher.npz')['obs'][:, :, None, :]
-                actions = np.load('data/reacher.npz')['action']
-                dones = np.load('data/reacher.npz')['action']
+            elif FLAGS.datasource == 'reacher':
+                dones = data['action']
 
                 dataset[:, :, :, :2] = dataset[:, :, :, :2] % (2 * np.pi)
                 s = dataset.shape
@@ -1374,8 +1402,6 @@ def main():
                 # For now a hacky way to deal with dones since each episode is always of length 50
                 dataset = np.concatenate([dataset[:, 49:99], dataset[:, [99] + list(range(49))]], axis=0)
                 actions = np.concatenate([actions[:, 49:99], actions[:, [99] + list(range(49))]], axis=0)
-            else:
-                raise AssertionError("Unsupported data source")
 
             if FLAGS.single_task:
                 # train on a single task
@@ -1393,7 +1419,8 @@ def main():
 
             if FLAGS.debug:
                 debug(target_vars, sess)
-            else:
+
+            if not FLAGS.train:
                 test(target_vars, saver, sess, logdir, dataset_test, actions_test, dataset_train, mean, std)
 
 

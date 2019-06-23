@@ -205,7 +205,7 @@ class TrajInverseDynamics(object):
 
 
 class TrajFFDynamics(object):
-    """Construct the convolutional network specified in MAML"""
+    """Construct FF network"""
 
     def __init__(self, dim_input=4, num_filters=128, dim_output=1, action_dim=20):
 
