@@ -25,7 +25,7 @@ from custom_adam import AdamOptimizer
 from utils import ReplayBuffer, log_step_num_exp, parse_valid_obs, safemean
 import seaborn as sns
 
-from envs import Point, Maze, Reacher
+from envs import Point, Maze, Reacher, Ball
 
 sns.set()
 plt.rcParams["font.family"] = "Times New Roman"
@@ -37,7 +37,7 @@ torch.manual_seed(1)
 FLAGS = flags.FLAGS
 
 # Dataset Options
-flags.DEFINE_string('datasource', 'point', 'point or maze or reacher')
+flags.DEFINE_string('datasource', 'point', 'point or maze or reacher or phy_a or phy_cor')
 flags.DEFINE_integer('batch_size', 256, 'Size of inputs')
 flags.DEFINE_bool('single_task', False, 'whether to train on a single task')
 
@@ -45,6 +45,7 @@ flags.DEFINE_bool('pretrain_eval', False,
                   'either evaluate from pretraining dataset or from online dataset (since there are discrepancies)')
 
 # General Experiment Seittings
+flags.DEFINE_string('datadir', './data/', 'location where data is stored')
 flags.DEFINE_string('logdir', 'cachedir', 'location where log of experiments will be stored')
 flags.DEFINE_string('imgdir', 'rollout_images', 'location where image results of experiments will be stored')
 flags.DEFINE_string('exp', 'default', 'name of experiments')
@@ -127,8 +128,14 @@ if FLAGS.datasource == 'point':
 elif FLAGS.datasource == 'maze':
     FLAGS.latent_dim = 2
     FLAGS.action_dim = 2
-elif FLAGS.datasource == "reacher":
+elif FLAGS.datasource == 'reacher':
     FLAGS.latent_dim = 4
+    FLAGS.action_dim = 2
+elif FLAGS.datasource == 'phy_a':
+    FLAGS.latent_dim = 4   # s1, s2, phy_param
+    FLAGS.action_dim = 2
+elif FLAGS.datasource == 'phy_cor':
+    FLAGS.latent_dim = 3  # s1, s2, phy_param
     FLAGS.action_dim = 2
 
 
@@ -1174,7 +1181,8 @@ def main():
         os.makedirs(logdir)
     logger = TensorBoardOutputFormat(logdir)
 
-    if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze' or FLAGS.datasource == 'reacher':
+    if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze' or FLAGS.datasource == 'reacher' or \
+            FLAGS.datasource == 'phy_a' or FLAGS.datasource == 'phy_cor':
         if FLAGS.ff_model:
             model = TrajFFDynamics(dim_input=FLAGS.latent_dim, dim_output=FLAGS.latent_dim)
         else:
@@ -1185,12 +1193,12 @@ def main():
         X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
 
         if FLAGS.cond:
-            ACTION_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
+            ACTION_LABEL = tf.placeholder(shape=(None, FLAGS.action_dim), dtype=tf.float32)
         else:
             ACTION_LABEL = None
 
-        ACTION_NOISE_LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
-        ACTION_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, 2), dtype=tf.float32)
+        ACTION_NOISE_LABEL = tf.placeholder(shape=(None, FLAGS.action_dim), dtype=tf.float32)
+        ACTION_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.action_dim), dtype=tf.float32)
 
         X_START = tf.placeholder(shape=(None, 1, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
         X_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
@@ -1286,24 +1294,24 @@ def main():
                 env = Maze(start_arr, end_arr, FLAGS.eps, FLAGS.obstacle)
             elif FLAGS.datasource == 'reacher':
                 env = Reacher([0.7, 0.5], FLAGS.eps)
+            elif FLAGS.datasource == 'phy_a':
+                env = Ball(a=[0.05, 0.05], random_starts=True, eps=FLAGS.eps)
+            elif FLAGS.datasource == 'phy_cor':
+                env = Ball(cor=0.5, random_starts=True, eps=FLAGS.eps)
             else:
                 raise KeyError
 
             get_avg_step_num(target_vars, sess, env)
 
         else:
-            if FLAGS.datasource == 'point':
-                dataset = np.load('data/point.npz')['obs'][:, :, None, :]
-                actions = np.load('data/point.npz')['action']
+            data = np.load(FLAGS.datadir + FLAGS.datasource + '.npz')
+            dataset = data['obs'][:, :, None, :]
+            actions = data['action']
+
+            if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze':
                 mean, std = 0, 1
-            elif FLAGS.datasource == 'maze':
-                dataset = np.load('data/maze.npz')['obs'][:, :, None, :]
-                actions = np.load('data/maze.npz')['action']
-                mean, std = 0, 1
-            elif FLAGS.datasource == "reacher":
-                dataset = np.load('data/reacher.npz')['obs'][:, :, None, :]
-                actions = np.load('data/reacher.npz')['action']
-                dones = np.load('data/reacher.npz')['action']
+            elif FLAGS.datasource == 'reacher':
+                dones = data['action']
 
                 dataset[:, :, :, :2] = dataset[:, :, :, :2] % (2 * np.pi)
                 s = dataset.shape
@@ -1321,8 +1329,6 @@ def main():
                 # For now a hacky way to deal with dones since each episode is always of length 50
                 dataset = np.concatenate([dataset[:, 49:99], dataset[:, [99] + list(range(49))]], axis=0)
                 actions = np.concatenate([actions[:, 49:99], actions[:, [99] + list(range(49))]], axis=0)
-            else:
-                raise AssertionError("Unsupported data source")
 
             if FLAGS.single_task:
                 # train on a single task
