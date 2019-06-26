@@ -5,7 +5,7 @@ import matplotlib
 import numpy as np
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
 from tqdm import tqdm
-from envs import Ball
+from envs import Ball, ManyBalls
 from utils import is_maze_valid
 from trajopt.envs.continual_reacher_env import ContinualReacher7DOFEnv
 
@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 parser = argparse.ArgumentParser()
 parser.add_argument('-save_path', type=str, default='./data/')
 parser.add_argument('--data_type', choices=['simple', 'maze', 'reacher', 'fetch', 'phy', 'continual_reacher'])
-parser.add_argument('--phy_type', choices=['a', 'cor'], default='a')
+parser.add_argument('--phy_type', choices=['a', 'cor', 'balls'], default='a')
 
 args = parser.parse_args()
 
@@ -203,7 +203,7 @@ def gen_simple():
 
 def gen_phy(phy_type):
     # generate data for ball trajectories, with physical parameters
-    batch_size = 10000
+    batch_size = 10
     traj_length = 100
 
     trajs = []
@@ -220,6 +220,9 @@ def gen_phy(phy_type):
             # vary coefficient of restitution
             phy_param = np.random.uniform(0.0, 1.0)
             env = Ball(cor=phy_param, random_starts=True, phy_type=phy_type)
+        elif phy_type == "balls":
+            # generate a dataset where many balls collide with each other
+            env = ManyBalls()
 
         traj = []
         action = np.random.uniform(-1., 1., (traj_length, 2))

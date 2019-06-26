@@ -257,13 +257,12 @@ class Ball(gym.Env):
         np.random.seed(seed)
 
 
-def ManyBalls(gym.Env):
-    def __init__(self, num_balls, cor=None):
-        self.num_steps = num_steps
+class ManyBalls(gym.Env):
+    def __init__(self, num_balls=10, cor=None):
         self.num_balls = num_balls
         self.radius = 0.05
-        self.pos = [np.random.uniform(low=0.0, high=10.0, shape=(2,)) for _ in range(self.num_balls)]
-        self.v = [np.random.uniform(shape=(2,)) for _ in range(self.num_balls)]
+        self.pos = [np.random.uniform(low=0.0, high=5.0, size=(2,)) for _ in range(self.num_balls)]
+        self.v = [np.random.uniform(low=-1.0, high=1.0, size=(2,)) for _ in range(self.num_balls)]
 
         # assume all balls are of the same mass
         self.mass = [1. for _ in range(self.num_balls)]
@@ -274,6 +273,9 @@ def ManyBalls(gym.Env):
             self.cor = cor
         else:
             raise ValueError("coefficient of restitution must be in [0., 1.] range.")
+
+    def reset(self):
+        self.pos = [np.random.uniform(low=0.0, high=10.0, size=(2,)) for _ in range(self.num_balls)]
 
     def dist(self, i, j):
         return np.abs(self.pos[i] - self.pos[j]).sum()
@@ -289,7 +291,7 @@ def ManyBalls(gym.Env):
         self.v[i] = vii
         self.v[j] = vjj
 
-    def step(self):
+    def step(self, action):
         # irrelevant in this env
         reward = 0
         info = {}
