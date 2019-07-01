@@ -121,6 +121,9 @@ flags.DEFINE_integer('num_env', 16, 'Number of different environments to run in 
 
 flags.DEFINE_integer('n_exp', 1, 'Number of tests run for training and testing')
 
+# If True, estimate physical params from latent variable
+flags.DEFINE_bool('phy_latent', True, 'If True, estimate physical params from latent variable')
+
 FLAGS.batch_size *= FLAGS.num_gpus
 
 if FLAGS.datasource == 'point':
@@ -1406,6 +1409,11 @@ def main():
             if FLAGS.single_task:
                 # train on a single task
                 dataset = np.tile(dataset[0:1], (100, 1, 1, 1))[:, :20]
+
+            if FLAGS.datasource == 'phy_a' or FLAGS.datasource == 'phy_cor':
+                if FLAGS.phy_latent:
+                    # change physics param input to random noise
+                    dataset[:, :, -1] = np.random.uniform(-1, 1)
 
             split_idx = int(dataset.shape[0] * 0.9)
 
