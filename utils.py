@@ -78,9 +78,13 @@ def parse_valid_obs(obs, actions, dones):
     t_obs = []
     t_actions = []
 
+    # print('obs shape ', obs.shape)
+    # print('actions shape', actions.shape)
+    # print('dones shape', dones.shape)
+
     for i in range(obs.shape[0]):
         for t in range(1, obs.shape[1]):
-            if not dones[i, t - 1]:
+            if not dones[i, t-1]:
                 pair_obs = obs[i, t - 1:t + 1]
                 action = actions[i, t - 1]
 
@@ -173,7 +177,7 @@ class ReplayBuffer(object):
 
 
 ## Setting weights for equalized learning rates
-def get_weight(name, shape, gain=np.sqrt(2), use_wscale=False, fan_in=None, spec_norm=False, zero=False, fc=False):
+def get_weight(name, shape, gain=np.sqrt(2), use_wscale=False, fan_in=None, spec_norm=False, zero=False, fc=False, pos=False):
     if fan_in is None: fan_in = np.prod(shape[:-1])
     std = gain / np.sqrt(fan_in)  # He init
     if use_wscale:
@@ -193,6 +197,8 @@ def get_weight(name, shape, gain=np.sqrt(2), use_wscale=False, fan_in=None, spec
         else:
             var = tf.get_variable(name + 'weight', shape=shape,
                                   initializer=tf.contrib.layers.xavier_initializer(dtype=tf.float32))
+            if pos:
+                var = tf.abs(var)
 
     return var
 

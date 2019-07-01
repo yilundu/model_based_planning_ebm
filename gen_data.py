@@ -165,7 +165,7 @@ def gen_continual_reacher():
         action = np.random.uniform(-1., 1., (num_env, 100, 7))
         time_dones = []
 
-        for t in range(100):
+        for t in range(50):
             ob, _, done, _, = env.step(action[:, t])
             traj.append(ob)
             time_dones.append(done)

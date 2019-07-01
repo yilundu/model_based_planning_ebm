@@ -24,6 +24,7 @@ class Point(gym.Env):
             self.current = self.start
         # print("Reset ", self.current)
         self.counter = 0
+        self.add_timstep = np.random.randint(0, 30)
         return self.current
 
     def is_overlapping(self, a, b):  # returns None if rectangles don't intersect
@@ -71,12 +72,7 @@ class Point(gym.Env):
         dist = np.abs(self.current - self.end).sum()
         reward = -1 * dist
 
-        # if dist < self.eps:
-        #     done = True
-        # else:
-        #     done = False
-
-        if self.counter > 1000:
+        if dist < self.eps or self.counter > 100 + self.add_timstep:
             done = True
         else:
             done = False

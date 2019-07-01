@@ -12,6 +12,8 @@ from baselines.bench import Monitor
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
 from baselines.logger import TensorBoardOutputFormat
 from tensorflow.python.platform import flags
+from scipy.linalg import toeplitz
+from tensorflow.contrib.distributions import MultivariateNormalFullCovariance
 
 from traj_model import TrajFFDynamics, TrajInverseDynamics, TrajNetLatentFC
 
@@ -64,7 +66,7 @@ flags.DEFINE_integer('num_gpus', 1, 'number of gpus to train on')
 flags.DEFINE_float('ml_coeff', 1.0, 'Coefficient to multiply maximum likelihood (descriminator coefficient)')
 flags.DEFINE_float('l2_coeff', 1.0, 'Scale of regularization')
 
-flags.DEFINE_integer('num_steps', 20, 'Steps of gradient descent for training ebm')
+flags.DEFINE_integer('num_steps', 0, 'Steps of gradient descent for training ebm')
 flags.DEFINE_integer('num_plan_steps', 10, 'Steps of gradient descent for generating plans')
 
 # Architecture Settings
@@ -89,7 +91,7 @@ flags.DEFINE_string('objective', 'cd', 'objective used to train EBM')
 # Parameters for Planning 
 flags.DEFINE_integer('plan_steps', 10, 'Number of steps of planning')
 flags.DEFINE_bool('anneal', False, 'Whether to use simulated annealing for sampling')
-flags.DEFINE_bool('mppi', False, 'whether to use MPPI for planning instead of Langevin dynamics')
+flags.DEFINE_bool('mppi', True, 'whether to use MPPI for planning instead of Langevin dynamics')
 
 # Parameters for benchmark experiments
 flags.DEFINE_integer('n_benchmark_exp', 0, 'Number of benchmark experiments')
@@ -100,12 +102,15 @@ flags.DEFINE_float('end2', 0.5, 'x_end, y')
 flags.DEFINE_float('eps', 0.01, 'epsilon for done condition')
 flags.DEFINE_list('obstacle', [0.5, 0.1, 0.1, 0.5],
                   'a size 4 array specifying top left and bottom right, e.g. [0.25, 0.35, 0.3, 0.3]')
+flags.DEFINE_bool('score_reward', True, 'Always score the reward')
+flags.DEFINE_bool('log_traj', False, 'Don"t log trajectory by default')
 
 # Additional constraints
-flags.DEFINE_bool('constraint_vel', False, 'A distance constraint between each subsequent state')
+flags.DEFINE_bool('constraint_vel', True, 'A distance constraint between each subsequent state')
 flags.DEFINE_bool('constraint_goal', True, 'A distance constraint between current state and goal state')
+flags.DEFINE_bool('constraint_accel', True, 'An acceleration constraint on trajectory')
 
-flags.DEFINE_bool('gt_inverse_dynamics', True, 'if True, use GT dynamics; if False, train a inverse dynamics model')
+flags.DEFINE_bool('gt_inverse_dynamics', False, 'if True, use GT dynamics; if False, train a inverse dynamics model')
 
 # Constraints for RL training only
 flags.DEFINE_bool('random_action', False, 'instead of using the modeling to predict actions, use random actions instead')
@@ -118,8 +123,15 @@ flags.DEFINE_bool('rl_train', True, 'If true, run rl_train() instead of train()'
 flags.DEFINE_integer('seed', 1, 'Seed to use when running environments')
 flags.DEFINE_integer('nsteps', int(1e7), 'Total of steps of the environment to run')
 flags.DEFINE_integer('num_env', 16, 'Number of different environments to run in parallel')
+flags.DEFINE_bool('smooth_path', True, 'Initialize states to be smooth')
+flags.DEFINE_bool('opt_low', False, 'using std as part of exploration')
 
 flags.DEFINE_integer('n_exp', 1, 'Number of tests run for training and testing')
+flags.DEFINE_float('v_coeff', 0.0, 'velocity coefficient')
+flags.DEFINE_float('g_coeff', 1.0, 'goal coefficient')
+flags.DEFINE_float('l_coeff', 0.0, 'l2 to last state coefficient')
+flags.DEFINE_float('a_coeff', 1.0, 'acceleration coefficient')
+flags.DEFINE_float('traj_scale', 1.0, 'scaling on smooth trajectories')
 
 FLAGS.batch_size *= FLAGS.num_gpus
 
@@ -144,6 +156,28 @@ elif FLAGS.datasource == 'phy_cor':
 
 if FLAGS.datasource == "reacher" or FLAGS.datasource == "continual_reacher":
     FLAGS.gt_inverse_dynamics = False
+
+
+mvn = None
+def smooth_trajectory_tf(scale):
+    global mvn
+    if mvn is None:
+        n = FLAGS.plan_steps
+        matrix = toeplitz([1, -2 , 1] + [0]*(n-1), [1] + [0] * (n-1))
+        matrix[-2:] = 0
+        matrix[-1, -2:] = [1, -1]
+
+        # matrix[:2] = 0
+        # matrix[0, 0:2] = [1, -1]
+        # matrix[1, ::2] =  1
+
+        covar = matrix.T.dot(matrix)
+        inv_cov = scale * np.linalg.inv(covar)
+        mu = np.zeros(n)
+        mvn = MultivariateNormalFullCovariance(loc=mu, covariance_matrix=inv_cov)
+
+    sample = mvn.sample((FLAGS.num_env * FLAGS.noise_sim * FLAGS.latent_dim,))
+    return sample
 
 
 def rescale_ob(ob, forward=True):
@@ -173,19 +207,31 @@ def get_avg_step_num(target_vars, sess, env):
         cum_reward = 0
         obs = env.reset()
         start = obs
+        ims = []
+
         while True:
             current_point = obs
-            end_point = env.end
+
+            if FLAGS.datasource in ["point", "maze"]:
+                end_point = env.end
+            else:
+                end_point = env.model.site_pos[env.target_sid]
+
             X_START = target_vars['X_START']
             X_END = target_vars['X_END']
             X_PLAN = target_vars['X_PLAN']
             x_joint = target_vars['x_joint']
             output_actions = target_vars['actions']
+            l2_weight = target_vars['l2_weight']
+            num_steps = target_vars['num_steps']
 
             x_start = current_point[None, None, None, :]
             x_end = end_point[None, None, None, :]
 
-            x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, FLAGS.latent_dim))
+            if FLAGS.smooth_path:
+                x_plan = np.tile(x_start, (1, FLAGS.plan_steps, 1, 1))
+            else:
+                x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, FLAGS.latent_dim))
 
             if FLAGS.cond:
                 ACTION_PLAN = target_vars['ACTION_PLAN']
@@ -195,7 +241,7 @@ def get_avg_step_num(target_vars, sess, env):
                                              X_PLAN: x_plan, ACTION_PLAN: actions})
             else:
                 x_joint, output_actions = sess.run([x_joint, output_actions],
-                                                   {X_START: x_start, X_END: x_end, X_PLAN: x_plan})
+                        {X_START: x_start, X_END: x_end, X_PLAN: x_plan, l2_weight: 1.0, num_steps: FLAGS.num_plan_steps})
                 # output_actions = output_actions[None, :, :]
 
             kill = False
@@ -226,16 +272,24 @@ def get_avg_step_num(target_vars, sess, env):
                     cum_reward += reward
 
                     print("obs", obs)
-                    print("actions", output_actions[0, i, :])
                     print("target_obs", target_obs)
-                    print("done?", done)
+                    print("done?", done, "iter {}".format(i))
                     points.append(obs)
 
                     if done:
                         kill = True
                         break
 
-                    if np.abs(target_obs - obs).mean() > 0.55:
+                    if FLAGS.datasource == "continual_reacher":
+                        im = env.sim.render(256, 256)
+                        ims.append(im)
+
+                    if FLAGS.datasource == "continual_reacher":
+                        diff_dist = 0.50
+                    else:
+                        diff_dist = 0.55
+
+                    if np.abs(target_obs - obs).mean() > diff_dist:
                         print("replanning")
                         break
 
@@ -247,6 +301,12 @@ def get_avg_step_num(target_vars, sess, env):
             # Only score environments for length equal to 1000
             if FLAGS.score_reward and len(points) > 1000:
                 break
+
+        if FLAGS.datasource == "continual_reacher":
+            print(obs[-6:])
+            imageio.mimwrite("traj.gif", ims)
+            print("Saved trajectory at traj.gif!!!")
+            assert False
 
         cum_rewards.append(cum_reward)
 
@@ -356,31 +416,44 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
     loss_total = target_vars['total_loss']
     dyn_loss = target_vars['dyn_loss']
     dyn_dist = target_vars['dyn_dist']
+    cum_energies = target_vars['cum_plan_energy']
+    num_steps = target_vars['num_steps']
     LR = target_vars['lr']
+    l2_weight = target_vars['l2_weight']
+    num_steps = target_vars['num_steps']
+
+    num_plan_steps = FLAGS.num_plan_steps
 
     ob = env.reset()[:, None, None, :]
 
     output = [train_op, x_mod]
     log_output = [train_op, dyn_loss, dyn_dist, energy_pos, energy_neg, loss_ml, loss_total, x_grad, action_grad, x_mod]
 
-    replay_buffer = ReplayBuffer(100000)
-    pos_replay_buffer = ReplayBuffer(100000)
+    replay_buffer = ReplayBuffer(10000)
+    pos_replay_buffer = ReplayBuffer(1000000)
 
     epinfos = []
     points = []
     total_obs = []
 
-    x_traj = np.random.uniform(-1.0, 1.0, (FLAGS.num_env, FLAGS.plan_steps+1, 1, FLAGS.latent_dim))
+    if FLAGS.smooth_path:
+        x_traj = np.tile(ob, (1, FLAGS.plan_steps+1, 1, 1))
+    else:
+        x_traj = np.random.uniform(-1.0, 1.0, (FLAGS.num_env, FLAGS.plan_steps+1, 1, FLAGS.latent_dim))
+
     action_plan = np.random.uniform(-1, 1, (FLAGS.num_env, FLAGS.plan_steps, FLAGS.action_dim))
+    plan_energy = np.zeros(FLAGS.num_env)
 
     for itr in range(resume_iter, tot_iter):
 
         if itr != resume_iter:
-            if FLAGS.datasource != "continual_reacher":
-                x_traj_random = np.random.uniform(-1.0, 1.0, (FLAGS.num_env, FLAGS.plan_steps+1, 1, FLAGS.latent_dim))
+            if FLAGS.smooth_path:
+                x_traj_random = np.tile(ob, (1, FLAGS.plan_steps+1, 1, 1))
             else:
                 x_traj_random = np.random.uniform(-1.0, 1.0, (FLAGS.num_env, FLAGS.plan_steps+1, 1, FLAGS.latent_dim))
 
+            # print(plan_energy.squeeze() / FLAGS.num_plan_steps)
+            dones_tot = dones_tot | (plan_energy.sum(axis=1) / FLAGS.num_plan_steps > 1.0)
             x_traj[dones_tot] = x_traj_random[dones_tot]
 
         x_plan = np.concatenate([x_traj[:, 2:], x_traj[:, -1:]], axis=1)
@@ -391,13 +464,15 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
         elif FLAGS.datasource == "reacher":
             x_end = np.tile(np.array([[0.7, 0.5]]), (FLAGS.num_env, 1))[:, None, None, :]
         elif FLAGS.datasource == "continual_reacher":
-            x_end = np.tile(np.array([[0.1, 0.1, 0.1]]), (FLAGS.num_env, 1))[:, None, None, :]
+            x_end = ob[:, :, :, -6:-3]
         else:
             x_end = np.tile(np.array([[0.5, 0.5]]), (FLAGS.num_env, 1))[:, None, None, :]
 
-        x_traj, traj_actions = sess.run([x_joint, actions],
-                {X_START: ob, X_PLAN: x_plan, X_END: x_end, ACTION_PLAN: action_plan})
+        feed_dict = {X_START: ob, X_PLAN: x_plan, X_END: x_end, ACTION_PLAN: action_plan}
+        feed_dict[l2_weight] = min(itr / 1000, 1)
+        feed_dict[num_steps] = num_plan_steps
 
+        x_traj, traj_actions, plan_energy = sess.run([x_joint, actions, cum_energies], feed_dict)
 
         # Clip actions in the case of continual reacher
         if FLAGS.datasource == "continual_reacher" or FLAGS.datasource == "reacher":
@@ -410,6 +485,7 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
         dones = []
         diffs = []
         dones_tot = np.zeros(FLAGS.num_env).astype(np.bool)
+        print("Plan energy ", plan_energy.mean(axis=0))
         for bp in range(traj_actions.shape[1]):
             if FLAGS.random_action:
                 action = np.random.uniform(-1, 1, traj_actions[:, bp].shape)
@@ -420,13 +496,14 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
 
             dones_tot = (done | dones_tot)
 
-            print("Hand position ", ob[0])
-            print("Action ", action[0])
-            # if bp == 0:
+            # print("Hand position ", ob[0])
+            # print("Action ", action[0])
+            if bp == 0 and FLAGS.datasource != "continual_reacher":
             #     print(x_traj[0, 0], x_traj[0, 1], ob[0])
             #     target_ob = x_traj[:, bp + 1, 0]
-            #     print("Trajectory: ", x_traj[0, -2:])
+                print("x_traj", x_traj[0, :, 0])
             #     print("Abs dist: ", np.mean(np.abs(ob - target_ob)))
+            # #     print("Trajectory: ", x_traj[0, -2:])
 
             dones.append(done)
             obs.append(ob)
@@ -436,12 +513,19 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
                 if maybeepinfo: epinfos.append(maybeepinfo)
 
             # print(ob.shape)
-            diff = np.abs(x_traj[:, bp + 1, 0] - ob).mean()
+            if FLAGS.datasource == "continual_reacher":
+                diff = np.abs(x_traj[:, bp + 1, 0, :-3] - ob[:, :-3]).mean()
+            else:
+                diff = np.abs(x_traj[:, bp + 1, 0] - ob).max()
             diffs.append(diff)
 
-            if diff > 0.1 or dones_tot.any():
-                break
+            if FLAGS.datasource == "continual_reacher":
+                diff_env = 0.3
+            else:
+                diff_env = 0.5
 
+            if ((diff > diff_env) and bp > 1) or dones_tot.any():
+                break
 
         ob = ob[:, None, None, :]
         dones = np.array(dones).transpose()
@@ -450,12 +534,25 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
         if FLAGS.heatmap:
             total_obs.append(obs.reshape((-1, FLAGS.latent_dim)))
 
+        if FLAGS.datasource == "point" or FLAGS.datasource == "maze":
+            # Rescale the action so there isn't ambiguity
+            traj_actions_max = np.abs(traj_actions).max(axis=2, keepdims=True)
+            traj_actions = traj_actions / np.maximum(traj_actions_max, 1)
+
         action, ob_pair = parse_valid_obs(obs, traj_actions, dones)
         # print("Maximum and minimum of observation: ", np.amax(ob_pair, axis=(0, 1, 2)).round(decimals=1), np.amin(ob_pair, axis=(0, 1, 2)).round(decimals=1))
 
+        # np.save("debug.npy", ob_pair)
+
         # For now only encode the first negative transition
-        x_noise = np.stack([x_traj[:, :bp+1], x_traj[:, 1:bp+2]], axis=2)
-        action_noise_neg = traj_actions[:, :bp+1]
+
+        if np.random.uniform() < -0.5:
+            x_noise = np.stack([x_traj[:, :-1], x_traj[:, 1:]], axis=2)
+            action_noise_neg = traj_actions[:, :]
+        else:
+            n = min(bp+1, x_traj.shape[1]-2)
+            x_noise = np.stack([x_traj[:, :n], x_traj[:, 1:n+1]], axis=2)
+            action_noise_neg = traj_actions[:, :n]
 
         # whole trajectory instead
         # x_noise = np.stack([x_traj[:, :-1], x_traj[:, 1:]], axis=2)
@@ -472,7 +569,7 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
             encode_data = np.concatenate([ob_pair, np.tile(traj_action_encode, (1, FLAGS.total_frame, 1, 1))], axis=3)
             pos_replay_buffer.add(encode_data)
 
-        if len(pos_replay_buffer) > FLAGS.num_env * FLAGS.plan_steps and FLAGS.replay_batch:
+        if len(pos_replay_buffer) > FLAGS.num_env * FLAGS.plan_steps:
             sample_data = pos_replay_buffer.sample(FLAGS.num_env * FLAGS.plan_steps)
             sample_ob = sample_data[:, :, :, :-FLAGS.action_dim]
             sample_actions = sample_data[:, 0, 0, -FLAGS.action_dim:]
@@ -484,6 +581,7 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
                 ob_pair, action = sample_ob, sample_actions
 
         feed_dict = {X: ob_pair, X_NOISE: x_noise_neg, ACTION_NOISE: action_noise_neg, LR: FLAGS.lr}
+        # print("x_noise_neg ", x_noise_neg)
 
         if ACTION_LABEL is not None:
             feed_dict[ACTION_LABEL] = action
@@ -495,9 +593,15 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
             # feed_dict[X_NOISE][replay_mask] = replay_batch[replay_mask]
             feed_dict[X_NOISE] = np.concatenate([feed_dict[X_NOISE], replay_batch], axis=0)
 
+        # print("Normalization statistics ", feed_dict[X_NOISE].mean(axis=(0, 1)), feed_dict[X_NOISE].std(axis=(0, 1)))
+
         if itr % FLAGS.log_interval == 0:
             _, dyn_loss, dyn_dist, e_pos, e_neg, loss_ml, loss_total, x_grad, action_grad, x_mod = sess.run(log_output,
                                                                                                             feed_dict=feed_dict)
+
+            if e_neg.mean() > 0.05:
+                num_plan_steps += 20
+
             kvs = {}
             kvs['e_pos'] = e_pos.mean()
             kvs['e_neg'] = e_neg.mean()
@@ -510,7 +614,9 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
             kvs['iter'] = itr
             kvs["train_episode_length_mean"] = safemean([epinfo['l'] for epinfo in epinfos])
             kvs["train_episode_reward_mean"] = safemean([epinfo['r'] for epinfo in epinfos])
-            kvs["diffs"] = diffs[0]
+            kvs["diffs_start"] = diffs[0]
+            kvs["diffs_end"] = diffs[-1]
+            kvs["num_plan_steps"] = num_plan_steps
 
             epinfos = []
 
@@ -523,9 +629,10 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
         else:
             _, x_mod = sess.run(output, feed_dict=feed_dict)
 
-        if FLAGS.replay_batch and (x_mod is not None):
+        # print("x_mod ", x_mod)
+
+        if FLAGS.replay_batch:
             replay_buffer.add(x_mod)
-            replay_buffer.add(ob_pair)
 
         if itr % FLAGS.save_interval == 0:
             saver.save(sess, osp.join(FLAGS.logdir, FLAGS.exp, 'model_{}'.format(itr)))
@@ -588,14 +695,14 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
         for j, i in random_combo:
             label = dataloader[:, j - FLAGS.total_frame:j]
             label_i = label[perm_idx[i:i + FLAGS.batch_size]]
-            data_corrupt = np.random.uniform(-1.2, 1.2, (
+            data_corrupt = np.random.uniform(-1.0, 1.0, (
                 FLAGS.batch_size, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim))
 
             feed_dict = {X: label_i, X_NOISE: data_corrupt, lr: FLAGS.lr}
 
             if ACTION_LABEL is not None:
                 feed_dict[ACTION_LABEL] = actions[perm_idx[i:i + FLAGS.batch_size], j - FLAGS.total_frame + 1]
-                feed_dict[ACTION_NOISE_LABEL] = np.random.uniform(-1.2, 1.2, (FLAGS.batch_size, 2))
+                feed_dict[ACTION_NOISE_LABEL] = np.random.uniform(-1.2, 1.2, (FLAGS.batch_size, FLAGS.action_dim))
 
             # print("Action label", feed_dict[ACTION_LABEL][0])
             # print("Action noise label", feed_dict[ACTION_NOISE_LABEL][0])
@@ -678,10 +785,12 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, s
         x_start = data[n:n + 1, 3:4]
         # x_end = np.array([0.7, -0.8])[None, None, None, :]
         x_end = data[n:n + 1, 3 + FLAGS.plan_steps + 1:3 + FLAGS.plan_steps + 2]
+    elif FLAGS.datasource == "continual_reacher":
+        x_start = np.array([3.53e-4, -1.59e-3, 6.077e-2, 3.099e-3, -1.079e-2, 3.217e-2, -3.403e-3, 2.20e-3,
+                            2.3671e-3, 3.812e-1, -1.282e-2, -5.663e-2, 8.615e-2, -1.7422e-2, 8.209e-1, -5.998e-1,
+                            -8.838e-5, 2.4255e-2, -1.5922e-1, -2.2314e-2])
+        x_end = np.array([0.1, 0.1, 0.1])[None, None, None, :]
 
-    # interp_weights = np.linspace(0, 1, FLAGS.plan_steps+2)[None, :, None, None]
-    # x_plan = interp_weights * x_start + (1 - interp_weights) * x_end
-    # x_plan = x_plan[:, 1:-1]
 
     x_plan = np.random.uniform(-1, 1, (FLAGS.n_exp, FLAGS.plan_steps, 1, FLAGS.latent_dim))
     x_start, x_end, x_plan = np.tile(x_start, (n, 1, 1, 1)), np.tile(x_end, (n, 1, 1, 1)), x_plan
@@ -770,6 +879,25 @@ def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, s
         plt.savefig(save_dir)
 
 
+    elif FLAGS.datasource == "continual_reacher":
+        # Generate 2D Videos of Particles Moving
+        dats = x_joint[0]
+        env = ContinualReacher7DOFEnv()
+        sim = env.sim
+        # env.sim.data.site_xpos[env.target_sid] = [0.1, 0.1, 0.1]
+        ims = []
+
+        for i in range(dats.shape[0]):
+            state = dats[i]
+            sim.data.qpos[:7] = state[0, :7]
+            sim.forward()
+            im = sim.render(256, 256)
+            ims.append(im)
+
+        save_file = osp.join(imgdir, 'test_exp{}_iter{}_{}.gif'.format(FLAGS.exp, FLAGS.resume_iter, timestamp))
+        imageio.mimwrite(save_file, ims)
+
+
 def debug(target_vars, sess):
     X = target_vars['X']
     ACTION_LABEL = target_vars['ACTION_LABEL']
@@ -793,7 +921,12 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
     x_joint = tf.concat([X_START, X_PLAN], axis=1)
     steps = tf.constant(0)
 
-    c = lambda i, x, y: tf.less(i, FLAGS.num_plan_steps)
+    l2_weight = tf.placeholder(shape=None, dtype=tf.float32)
+    num_steps = tf.placeholder(shape=None, dtype=tf.float32)
+    target_vars['l2_weight'] = l2_weight
+    target_vars['num_steps'] = num_steps
+
+    c = lambda i, x, y: tf.less(tf.to_float(i), num_steps)
 
     if cond:
         actions = ACTION_LABEL
@@ -808,9 +941,9 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
         cum_energies = 0
         for i in range(FLAGS.plan_steps - FLAGS.total_frame + 2):
             if cond:
-                cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=actions[:, i])
+                cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=actions[:, i], opt_low=FLAGS.opt_low)
             else:
-                cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=None)
+                cum_energy = (FLAGS.plan_steps - i) * model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=None, opt_low=FLAGS.opt_low)
 
             cum_energies = cum_energies + cum_energy
 
@@ -820,30 +953,38 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
             anneal_val = 1
 
         if FLAGS.constraint_vel:
-            cum_energies = cum_energies + 1.0 * tf.reduce_mean(tf.abs(x_joint[:, 1:] - x_joint[:, :-1]))
+            if FLAGS.datasource == "continual_reacher":
+                cum_energies = cum_energies + FLAGS.v_coeff * tf.reduce_mean(tf.square(x_joint[:, 1:, :, :-3] - x_joint[:, :-1, :, :-3]))
+            else:
+                cum_energies = cum_energies + FLAGS.v_coeff * tf.reduce_mean(tf.square(x_joint[:, 1:] - x_joint[:, :-1]))
 
+        if FLAGS.constraint_accel:
+            if FLAGS.datasource == "continual_reacher":
+                cum_energies = cum_energies + FLAGS.a_coeff * tf.reduce_mean(tf.square(x_joint[:, 2:, :, :-3] - 2 * x_joint[:, 1:-1, :, :-3] + x_joint[:, :-2, :, :-3]))
+            else:
+                cum_energies = cum_energies + FLAGS.a_coeff * tf.reduce_mean(tf.square(x_joint[:, 2:] - 2 * x_joint[:, 1:-1] + x_joint[:, :-2]))
         # if FLAGS.constraint_goal:
         #     cum_energies = cum_energies + 0.1 * tf.reduce_mean(tf.square(x_joint - X_END))
 
         if FLAGS.constraint_goal:
             if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
-                goal_error = 1.0 * tf.reduce_mean(tf.abs(x_joint - X_END), axis=[1, 2, 3])
+                goal_error = FLAGS.g_coeff * tf.reduce_mean(tf.square(x_joint - X_END), axis=[1, 2, 3])
                 cum_energies = cum_energies + tf.expand_dims(goal_error, axis=1)
             elif FLAGS.datasource == "reacher":
-                goal_error = 1.0 * tf.reduce_mean(tf.abs(x_joint[:, :, :, :2] - X_END), axis=[1, 2, 3])
+                goal_error = FLAGS.g_coeff * tf.reduce_mean(tf.square(x_joint[:, :, :, :2] - X_END), axis=[1, 2, 3])
                 cum_energies = cum_energies + tf.expand_dims(goal_error, axis=1)
             elif FLAGS.datasource == "continual_reacher":
-                goal_error = 1.0 * tf.reduce_mean(tf.abs(x_joint[:, :, :, -6:-3] - X_END), axis=[1, 2, 3])
+                goal_error = FLAGS.g_coeff * tf.reduce_mean(tf.square(x_joint[:, :, :, -6:-3] - X_END), axis=[1, 2, 3])
                 cum_energies = cum_energies + tf.expand_dims(goal_error, axis=1)
 
         # L2 distance goal specification
         # weight should be adjusted accordingly
         if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
-            cum_energies = cum_energies + 1.0 * tf.reduce_mean(tf.abs(x_joint[:, -1:] - X_END))
+            cum_energies = cum_energies + FLAGS.l_coeff * tf.reduce_mean(tf.square(x_joint[:, -1:] - X_END))
         elif FLAGS.datasource == "reacher":
-            cum_energies = cum_energies + 1.0 * tf.reduce_mean(tf.abs(x_joint[:, -1:, :, :2] - X_END))
+            cum_energies = cum_energies + FLAGS.l_coeff * tf.reduce_mean(tf.square(x_joint[:, -1:, :, :2] - X_END))
         elif FLAGS.datasource == "continual_reacher":
-            cum_energies = cum_energies + 1.0 * tf.reduce_mean(tf.abs(x_joint[:, -1:, :, -6:-3] - X_END))
+            cum_energies = cum_energies + FLAGS.l_coeff * tf.reduce_mean(tf.square(x_joint[:, -1:, :, -6:-3] - X_END))
         else:
             raise AssertionError("Unsupported data source")
 
@@ -851,9 +992,6 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
         # x_grad = tf.Print(x_grad, [x_grad[0]], "x_grad value")
         x_joint = x_joint - FLAGS.step_lr * anneal_val * x_grad
         x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1]], axis=1)
-
-        # if FLAGS.datasource != "reacher":
-        #     x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
 
         # if FLAGS.cond:
         #     actions = actions - FLAGS.step_lr * anneal_val * action_grad
@@ -865,61 +1003,92 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
 
 
     def mppi_step(counter, x_joint, actions):
+        x_joint = x_joint[:, 1:]
         x_joint_tile = tf.tile(tf.expand_dims(x_joint, axis=1), (1, FLAGS.noise_sim, 1, 1, 1))
         x_joint_shape = tf.shape(x_joint_tile)
-        x_joint_tile = x_joint_tile + tf.random_normal(x_joint_shape, mean=0.0, stddev=0.02)
+        x_joint_tile = x_joint_tile
+
+        # Best for particle experiments
+        # sample = smooth_trajectory_tf(0.00001)
+
+        # Best for continual reacher experiments
+        sample = smooth_trajectory_tf(0.00001 * FLAGS.traj_scale)
+        # sample = tf.Print(sample, [tf.reduce_max(sample), tf.reduce_mean(tf.abs(sample))], "sample info")
+
+        sample = tf.reshape(sample, (FLAGS.num_env, FLAGS.noise_sim, FLAGS.latent_dim, FLAGS.plan_steps, 1))
+        sample = tf.cast(tf.transpose(sample, (0, 1, 3, 4, 2)), tf.float32)
+        x_joint_tile = x_joint_tile + sample
+        # x_joint_tile = tf.Print(x_joint_tile, [tf.shape(sample), sample[0, 0, :, 0, 0]], "value of sample")
         x_joint = tf.reshape(x_joint_tile, (-1, x_joint_shape[2], x_joint_shape[3], x_joint_shape[4]))
 
         x_end_shape = tf.shape(X_END)
         X_END_EXPAND = tf.tile(tf.expand_dims(X_END, axis=1), (1, FLAGS.noise_sim, 1, 1, 1))
         X_END_EXPAND = tf.reshape(X_END_EXPAND, (-1, x_end_shape[1], x_end_shape[2], x_end_shape[3]))
 
+        x_start_shape = tf.shape(X_START)
+        X_START_EXPAND_TILE = tf.tile(tf.expand_dims(X_START, axis=1), (1, FLAGS.noise_sim, 1, 1, 1))
+        X_START_EXPAND = tf.reshape(X_START_EXPAND_TILE, (-1, x_start_shape[1], x_start_shape[2], x_start_shape[3]))
+
+        x_joint = tf.concat([X_START_EXPAND, x_joint], axis=1)
+        x_joint_tile = tf.concat([X_START_EXPAND_TILE, x_joint_tile], axis=2)
+
         cum_energies = 0
         for i in range(FLAGS.plan_steps - FLAGS.total_frame + 2):
             if cond:
-                cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=actions[:, i])
+                cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=actions[:, i], opt_low=FLAGS.opt_low)
             else:
-                cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=None)
+                cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=None, opt_low=FLAGS.opt_low)
 
-            cum_energies = cum_energies + cum_energy
+            # if i == 0:
+            #     cum_energy = tf.Print(cum_energy, [tf.pow(100 * cum_energy, 3)], "Energy on first timestep")
+            cum_energies = cum_energies + ((FLAGS.plan_steps - i / 2) / FLAGS.plan_steps) ** 7  * tf.pow(cum_energy, 3)
+            # cum_energies = cum_energies + tf.pow(cum_energy, 3)
 
+        # cum_energies = tf.Print(cum_energies, [x_joint[0, 0], X_START[0, 0]], "trajectory")
+
+        # cum_energies = tf.Print(cum_energies, [cum_energies], "cumulative energies")
         if FLAGS.constraint_vel:
-            cum_energies = cum_energies + 1.0 * tf.reduce_mean(tf.abs(x_joint[:, 1:] - x_joint[:, :-1]))
+            cum_energies = cum_energies + l2_weight * FLAGS.v_coeff * tf.expand_dims(tf.reduce_mean(tf.square(x_joint[:, 1:] - x_joint[:, :-1]), axis=[1, 2, 3]), axis=1)
+
+        if FLAGS.constraint_accel:
+            cum_energies = cum_energies + l2_weight * FLAGS.a_coeff * tf.expand_dims(tf.reduce_mean(tf.square(x_joint[:, 2:] - 2 * x_joint[:, 1:-1] + x_joint[:, :-2]), axis=[1, 2, 3]), axis=1)
+
 
         # cum_energies = tf.Print(cum_energies, [tf.shape(cum_energies), tf.shape(X_END_EXPAND)], "cumulative energies")
+        # score_weights = tf.Print(score_weights, [score_weights])
 
+        # scaler_weight = tf.square(tf.to_float(tf.reshape(tf.range(FLAGS.plan_steps+1) / FLAGS.plan_steps, (1, FLAGS.plan_steps + 1, 1, 1))))
+        scaler_weight = tf.ones(1) * l2_weight
         if FLAGS.constraint_goal:
             if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
-                goal_error = 1.0 * tf.reduce_mean(tf.abs(x_joint - X_END_EXPAND), axis=[1, 2, 3])
+                goal_error = l2_weight * FLAGS.g_coeff * tf.reduce_mean(tf.square(scaler_weight * (x_joint[:, :] - X_END_EXPAND)), axis=[1, 2, 3])
                 cum_energies = cum_energies + tf.expand_dims(goal_error, axis=1)
             elif FLAGS.datasource == "reacher":
-                goal_error = 1.0 * tf.reduce_mean(tf.abs(x_joint[:, :, :, :2] - X_END_EXPAND), axis=[1, 2, 3])
+                goal_error = l2_weight * FLAGS.g_coeff * tf.reduce_mean(tf.square(scaler_weight * (x_joint[:, :, :, :2] - X_END_EXPAND)), axis=[1, 2, 3])
                 cum_energies = cum_energies + tf.expand_dims(goal_error, axis=1)
             elif FLAGS.datasource == "continual_reacher":
-                goal_error = 1.0 * tf.reduce_mean(tf.abs(x_joint[:, :, :, -6:-3] - X_END_EXPAND), axis=[1, 2, 3])
+                goal_error = l2_weight * FLAGS.g_coeff * tf.reduce_mean(tf.square(scaler_weight * (x_joint[:, :, :, -6:-3] - X_END_EXPAND)), axis=[1, 2, 3])
                 cum_energies = cum_energies + tf.expand_dims(goal_error, axis=1)
 
         # X_END_EXPAND = tf.Print(X_END_EXPAND, [X_END_EXPAND[0], x_joint[0]], "X_END value")
         if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
-            cum_energies = cum_energies + 1.0 * tf.reduce_mean(tf.abs(x_joint[:, -1:] - X_END_EXPAND))
+            cum_energies = cum_energies + FLAGS.l_coeff * tf.reduce_mean(tf.square(x_joint[:, -1:] - X_END_EXPAND))
         elif FLAGS.datasource == "reacher":
-            cum_energies = cum_energies + 1.0 * tf.reduce_mean(tf.abs(x_joint[:, -1:, :, :2] - X_END_EXPAND))
+            cum_energies = cum_energies + FLAGS.l_coeff * tf.reduce_mean(tf.square(x_joint[:, -1:, :, :2] - X_END_EXPAND))
         elif FLAGS.datasource == "continual_reacher":
-            cum_energies = cum_energies + 1.0 * tf.reduce_mean(tf.abs(x_joint[:, -1:, :, -6:-3] - X_END_EXPAND))
+            cum_energies = cum_energies + FLAGS.l_coeff * tf.reduce_mean(tf.square(x_joint[:, -1:, :, -6:-3] - X_END_EXPAND))
         else:
             raise AssertionError("Unsupported data source")
 
 
-        # cum_energies = tf.Print(cum_energies, [tf.shape(cum_energies)], "cumulative energies")
         cum_energies = tf.reshape(cum_energies, (x_joint_shape[0], FLAGS.noise_sim))
+        # cum_energies = tf.Print(cum_energies, [cum_energies], "cum_energies")
         score_weights = tf.nn.softmax(-cum_energies * 10000, axis=1)
-        # score_weights = tf.Print(score_weights, [score_weights])
+        # score_weights = tf.Print(score_weights, [score_weights], "score_weights")
         score_weights = tf.reshape(score_weights, (x_joint_shape[0], FLAGS.noise_sim, 1, 1, 1))
 
         x_joint = tf.reduce_sum(x_joint_tile * score_weights, axis=1)
-
-        # if FLAGS.datasource != "reacher":
-        #     x_joint = tf.clip_by_value(x_joint, -1.0, 1.0)
+        x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1]], axis=1)
 
         counter = counter + 1
 
@@ -941,8 +1110,17 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
         actions = idyn_model.forward(pair_states, weights)
         actions = tf.transpose(tf.reshape(actions, (FLAGS.plan_steps, batch_size, FLAGS.action_dim)), (1, 0, 2))
 
+    cum_energies = []
+    for i in range(FLAGS.plan_steps - FLAGS.total_frame + 2):
+        cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=None)
+        cum_energies.append(cum_energy)
+        # cum_energies = tf.Print(cum_energies, [cum_energy], "Transition")
+
+    cum_energies = tf.concat(cum_energies, axis=1)
+
     target_vars['actions'] = actions
     target_vars['x_joint'] = x_joint
+    target_vars['cum_plan_energy'] = cum_energies
     target_vars['X_START'] = X_START
     target_vars['X_END'] = X_END
     target_vars['X_PLAN'] = X_PLAN
@@ -972,7 +1150,6 @@ def construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN,
         else:
             anneal_val = 1
 
-        print(x_val.get_shape())
         if FLAGS.datasource == "reacher":
             energy = tf.reduce_sum(tf.square(x_val[:, :2] - X_END[:, 0, 0]))
         else:
@@ -1014,7 +1191,7 @@ def construct_ff_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LA
     target_vars['dyn_loss'] = dyn_loss
     target_vars['dyn_dist'] = dyn_dist
 
-    dyn_optimizer = AdamOptimizer(1e-3)
+    dyn_optimizer = AdamOptimizer(1e-4)
     gvs = dyn_optimizer.compute_gradients(dyn_loss)
     dyn_train_op = dyn_optimizer.apply_gradients(gvs)
 
@@ -1101,15 +1278,33 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
 
         action_label = action_label - FLAGS.step_lr * action_grad
 
-        # x_mod = tf.clip_by_value(x_mod, -1.2, 1.2)
-        # action_label = tf.clip_by_value(action_label, -1.2, 1.2)
+        counter = counter + 1
+
+        return counter, x_mod, action_label
+
+
+    def mppi_step(counter, x_mod, action_label):
+        x_mod_tile = tf.tile(tf.expand_dims(x_mod, axis=1), (1, FLAGS.noise_sim, 1, 1, 1))
+        x_mod_shape = tf.shape(x_mod_tile)
+        x_mod_tile = x_mod_tile + tf.random_normal(tf.shape(x_mod_tile), mean=0.0, stddev=0.01)
+        x_mod = tf.reshape(x_mod_tile, (-1, x_mod_shape[2], x_mod_shape[3], x_mod_shape[4]))
+
+        energy_noise = model.forward(x_mod, weights, action_label=action_label, reuse=True, stop_at_grad=True)
+
+        energy_noise = tf.reshape(energy_noise, (x_mod_shape[0], FLAGS.noise_sim))
+        score_weights = tf.nn.softmax(-energy_noise*10000, axis=1)
+        score_weights = tf.reshape(score_weights, (x_mod_shape[0], FLAGS.noise_sim, 1, 1, 1))
+        x_mod = tf.reduce_sum(x_mod_tile * score_weights, axis=1)
 
         counter = counter + 1
 
         return counter, x_mod, action_label
 
-    steps, x_mod, action_label = tf.while_loop(c, mcmc_step, (steps, x_mod, ACTION_NOISE_LABEL))
-    # action_label = tf.Print(action_label, [action_label], "action label (HELP ME)")
+
+    if FLAGS.mppi:
+        steps, x_mod, action_label = tf.while_loop(c, mppi_step, (steps, x_mod, ACTION_NOISE_LABEL))
+    else:
+        steps, x_mod, action_label = tf.while_loop(c, mcmc_step, (steps, x_mod, ACTION_NOISE_LABEL))
 
     if FLAGS.cond:
         if FLAGS.datasource != "reacher":
@@ -1127,6 +1322,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
     action_label = tf.stop_gradient(action_label)
 
     energy_neg = model.forward(x_mod, weights, action_label=action_label, reuse=True)
+    # energy_neg = tf.Print(energy_neg, [energy_neg], message="energy_neg weights")
     if FLAGS.cond:
         x_grad, action_grad = tf.gradients(FLAGS.temperature * energy_neg, [x_mod, action_label])
     else:
@@ -1144,11 +1340,11 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
             loss_ml = FLAGS.ml_coeff * (pos_loss + tf.reduce_sum(neg_loss))
         elif FLAGS.objective == 'cd':
             pos_loss = tf.reduce_mean(temp * energy_pos)
-            # weight_coeff = tf.stop_gradient(tf.nn.softmax(-0.001 * energy_pos, axis=0))
+            # weight_coeff = tf.stop_gradient(tf.nn.softmax(-0.01 * energy_pos, axis=0))
             weight_coeff = tf.ones(1)
             inverse_sum = tf.reduce_sum(1. / weight_coeff)
             neg_loss = -tf.reduce_mean(temp * energy_neg)
-            loss_ml = FLAGS.ml_coeff * (tf.reduce_mean(pos_loss) + tf.reduce_sum(neg_loss))
+            loss_ml = FLAGS.ml_coeff * (tf.reduce_mean(pos_loss / weight_coeff) + inverse_sum * tf.reduce_sum(neg_loss))
         elif FLAGS.objective == 'softplus':
             loss_ml = FLAGS.ml_coeff * \
                       tf.nn.softplus(temp * (energy_pos - energy_neg))
@@ -1370,6 +1566,8 @@ def main():
                 env = Ball(a=[0.05, 0.05], random_starts=True, eps=FLAGS.eps)
             elif FLAGS.datasource == 'phy_cor':
                 env = Ball(cor=0.5, random_starts=True, eps=FLAGS.eps)
+            elif FLAGS.datasource == 'continual_reacher':
+                env = ContinualReacher7DOFEnv(train=False)
             else:
                 raise KeyError
 
@@ -1402,6 +1600,10 @@ def main():
                 # For now a hacky way to deal with dones since each episode is always of length 50
                 dataset = np.concatenate([dataset[:, 49:99], dataset[:, [99] + list(range(49))]], axis=0)
                 actions = np.concatenate([actions[:, 49:99], actions[:, [99] + list(range(49))]], axis=0)
+            elif FLAGS.datasource == 'continual_reacher':
+                dataset = data['obs'][:, :, None, :]
+                actions = data['action']
+                mean, std = 0, 1
 
             if FLAGS.single_task:
                 # train on a single task

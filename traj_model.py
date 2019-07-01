@@ -128,14 +128,18 @@ class TrajNetLatentFC(object):
             weights['b4'] = tf.Variable(tf.zeros([self.dim_hidden]), name='b4')
             weights['w5'] = get_weight('w5', [self.dim_hidden, self.dim_hidden], spec_norm=FLAGS.spec_norm)
             weights['b5'] = tf.Variable(tf.zeros([self.dim_hidden]), name='b5')
-            weights['w6'] = get_weight('w6', [self.dim_hidden, 1], spec_norm=FLAGS.spec_norm)
+            weights['w6'] = get_weight('w6', [self.dim_hidden, 1], spec_norm=False, pos=True)
 
         return weights
 
-    def forward(self, inp, weights, reuse=False, scope='', stop_grad=False, stop_at_grad=False, noise=True, action_label=False):
+    def forward(self, inp, weights, reuse=False, scope='', stop_grad=False, stop_at_grad=False, noise=True, action_label=False, opt_low=False):
         weights = weights.copy()
         batch_size = tf.shape(inp)[0]
         print(inp.get_shape())
+
+        if FLAGS.datasource == "continual_reacher":
+            # Set the goal position to be for stability
+            inp = tf.concat([inp[:, :, :, :-3], tf.zeros(tf.shape(inp[:, :, :, -3:]))], axis=3)
 
         def swish(inp):
             return inp * tf.nn.sigmoid(inp)
@@ -151,6 +155,13 @@ class TrajNetLatentFC(object):
         h3 = tf.nn.leaky_relu(tf.matmul(h2, weights['w3']) + weights['b3'])
 
         energy = tf.matmul(h3, weights['w6'])
+
+        if FLAGS.opt_low:
+            _, var = tf.nn.moments(h3, [1])
+            std = tf.sqrt(tf.expand_dims(var, 1))
+            # std = tf.Print(std, [std], "std")
+            energy = energy - std
+            # energy = tf.Print(energy, [energy, std], message="relative scale of energy/std")
 
         return energy
 
