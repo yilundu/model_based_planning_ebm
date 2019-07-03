@@ -101,11 +101,13 @@ class Maze(gym.Env):
             self.current = self.start
 
         print("Reset: ", self.current)
+        self.counter = 0
 
         return self.current
 
     def step(self, action):
         # Scale down action from range (-1, 1) to (-0.05, 0.05)
+        self.counter += 1
         action = action / max(np.abs(action).max(), 1)
         action = action / 20.
 

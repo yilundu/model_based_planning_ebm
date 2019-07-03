@@ -938,14 +938,14 @@ def is_maze_valid(dat):
     # Generate an indicator function for whether a point is valid in a hand designed
     # maze given dat (n x 2) array of data_points
 
-    segs = 4
+    segs = 2
     oob_mask = np.any(oob(dat), axis=1)
     # dat = dat[~data_mask]
 
     dat_idx = ((dat[:, 0] + 1) * segs).astype(np.int32)
 
-    data_mask = ((dat_idx % 2) == 0) | (((dat_idx % 4) == 1) & (dat[:, 1] > 0.7)) | (
-            ((dat_idx % 4) == 3) & (dat[:, 1] < -0.7))
+    data_mask = ((dat_idx % 2) == 0) | (((dat_idx % 4) == 1) & (dat[:, 1] > 0.25)) | (
+            ((dat_idx % 4) == 3) & (dat[:, 1] < -0.25))
 
     comb_mask = (~oob_mask) & data_mask
 

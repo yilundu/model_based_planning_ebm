@@ -264,6 +264,7 @@ def gen_maze():
     plt.scatter(ob[:, 0], ob[:, 1])
     plt.savefig(args.save_path + "maze.png")
     plt.clf()
+    print("Printed a sample image")
 
     obs = [ob.copy()]
     actions = np.random.uniform(-0.05, 0.05, (ob.shape[0], traj_length, 2))

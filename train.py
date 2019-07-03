@@ -25,6 +25,8 @@ from itertools import product
 from custom_adam import AdamOptimizer
 # from render_utils import render_reach
 from utils import ReplayBuffer, log_step_num_exp, parse_valid_obs, safemean
+from traj_utils import continual_reacher_inverse_dynamics, process_trajectory, linear_reacher_inverse_dynamics, update_linear_weight
+
 import seaborn as sns
 
 from trajopt.envs.continual_reacher_env import ContinualReacher7DOFEnv
@@ -53,7 +55,7 @@ flags.DEFINE_string('logdir', 'cachedir', 'location where log of experiments wil
 flags.DEFINE_string('imgdir', 'rollout_images', 'location where image results of experiments will be stored')
 flags.DEFINE_string('exp', 'default', 'name of experiments')
 flags.DEFINE_integer('log_interval', 10, 'log outputs every so many batches')
-flags.DEFINE_integer('save_interval', 1000, 'save outputs every so many batches')
+flags.DEFINE_integer('save_interval', 200, 'save outputs every so many batches')
 flags.DEFINE_integer('resume_iter', -1, 'iteration to resume training from')
 flags.DEFINE_bool('train', True, 'whether to train or test')
 flags.DEFINE_bool('debug', False, 'debug what is going on for conditional models')
@@ -79,7 +81,7 @@ flags.DEFINE_integer('total_frame', 2, 'Number of frames to train the energy mod
 flags.DEFINE_bool('replay_batch', True, 'Whether to use a replay buffer for samples')
 flags.DEFINE_bool('cond', False, 'Whether to condition on actions')
 flags.DEFINE_bool('zero_kl', True, 'whether to make the kl be zero')
-flags.DEFINE_bool('spec_norm', True, 'spectral norm for the networks')
+flags.DEFINE_bool('spec_norm', False, 'spectral norm for the networks')
 flags.DEFINE_integer('temperature', 1, 'Temperature for energy function')
 
 # Custom MCMC parameters
@@ -110,7 +112,8 @@ flags.DEFINE_bool('constraint_vel', True, 'A distance constraint between each su
 flags.DEFINE_bool('constraint_goal', True, 'A distance constraint between current state and goal state')
 flags.DEFINE_bool('constraint_accel', True, 'An acceleration constraint on trajectory')
 
-flags.DEFINE_bool('gt_inverse_dynamics', False, 'if True, use GT dynamics; if False, train a inverse dynamics model')
+flags.DEFINE_bool('gt_inverse_dynamics', True, 'if True, use GT dynamics; if False, train a inverse dynamics model')
+flags.DEFINE_bool('linear_inverse_dynamics', False, 'do inverse dynamics through a linear regression')
 
 # Constraints for RL training only
 flags.DEFINE_bool('random_action', False, 'instead of using the modeling to predict actions, use random actions instead')
@@ -132,6 +135,7 @@ flags.DEFINE_float('g_coeff', 1.0, 'goal coefficient')
 flags.DEFINE_float('l_coeff', 0.0, 'l2 to last state coefficient')
 flags.DEFINE_float('a_coeff', 1.0, 'acceleration coefficient')
 flags.DEFINE_float('traj_scale', 1.0, 'scaling on smooth trajectories')
+flags.DEFINE_bool('adaptive_sample', True, 'whether to adaptively sample')
 
 FLAGS.batch_size *= FLAGS.num_gpus
 
@@ -154,8 +158,8 @@ elif FLAGS.datasource == 'phy_cor':
     FLAGS.latent_dim = 3  # s1, s2, phy_param
     FLAGS.action_dim = 2
 
-if FLAGS.datasource == "reacher" or FLAGS.datasource == "continual_reacher":
-    FLAGS.gt_inverse_dynamics = False
+# if FLAGS.datasource == "reacher" or FLAGS.datasource == "continual_reacher":
+#     FLAGS.gt_inverse_dynamics = True
 
 
 mvn = None
@@ -201,6 +205,9 @@ def get_avg_step_num(target_vars, sess, env):
     cond = 'True' if FLAGS.cond else 'False'
     collected_trajs = []
 
+    if FLAGS.linear_inverse_dynamics:
+        state_matrix = np.load(osp.join(FLAGS.logdir, FLAGS.exp, 'model_{}.npy'.format(FLAGS.resume_iter)))
+
     for i in range(n_exp):
         points = []
         cum_rewards = []
@@ -208,6 +215,8 @@ def get_avg_step_num(target_vars, sess, env):
         obs = env.reset()
         start = obs
         ims = []
+
+        action = np.zeros((1, 7))
 
         while True:
             current_point = obs
@@ -244,6 +253,9 @@ def get_avg_step_num(target_vars, sess, env):
                         {X_START: x_start, X_END: x_end, X_PLAN: x_plan, l2_weight: 1.0, num_steps: FLAGS.num_plan_steps})
                 # output_actions = output_actions[None, :, :]
 
+            if FLAGS.linear_inverse_dynamics:
+                output_actions = linear_reacher_inverse_dynamics(x_joint[:, :, 0, :], action, state_matrix)
+
             kill = False
 
             if FLAGS.cond:
@@ -267,7 +279,16 @@ def get_avg_step_num(target_vars, sess, env):
 
             else:
                 for i in range(output_actions.shape[1]):
-                    obs, reward, done, _ = env.step(output_actions[0, i, :])
+                    if FLAGS.datasource == "continual_reacher" and FLAGS.gt_inverse_dynamics:
+                        target = x_joint[:, i+1, 0, :]
+                        trajectory = np.concatenate([obs.squeeze()[None, None, :], target[:, None, :]], axis=1)
+                        action = process_trajectory(trajectory[0]).squeeze()
+                        print("action shape ", action.shape)
+
+                        obs, reward, done, _ = env.step(action)
+                    else:
+                        action = output_actions[:, i, :]
+                        obs, reward, done, _ = env.step(action[0])
                     target_obs = x_joint[0, i + 1, 0]
                     cum_reward += reward
 
@@ -285,9 +306,12 @@ def get_avg_step_num(target_vars, sess, env):
                         ims.append(im)
 
                     if FLAGS.datasource == "continual_reacher":
-                        diff_dist = 0.50
+                        diff_dist = 0.3
                     else:
                         diff_dist = 0.55
+
+                    if FLAGS.linear_inverse_dynamics and len(points) > 1:
+                        update_linear_weight(points[-2][None, :], points[-1][None, :], action[None, :], state_matrix, 0.1)
 
                     if np.abs(target_obs - obs).mean() > diff_dist:
                         print("replanning")
@@ -444,8 +468,11 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
     action_plan = np.random.uniform(-1, 1, (FLAGS.num_env, FLAGS.plan_steps, FLAGS.action_dim))
     plan_energy = np.zeros(FLAGS.num_env)
 
-    for itr in range(resume_iter, tot_iter):
+    state_matrix = np.zeros((17, 24))
+    env_action = None
+    num_env_steps = 0
 
+    for itr in range(resume_iter, tot_iter):
         if itr != resume_iter:
             if FLAGS.smooth_path:
                 x_traj_random = np.tile(ob, (1, FLAGS.plan_steps+1, 1, 1))
@@ -469,37 +496,50 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
             x_end = np.tile(np.array([[0.5, 0.5]]), (FLAGS.num_env, 1))[:, None, None, :]
 
         feed_dict = {X_START: ob, X_PLAN: x_plan, X_END: x_end, ACTION_PLAN: action_plan}
-        feed_dict[l2_weight] = min(itr / 1000, 1)
+        feed_dict[l2_weight] = min(itr / 200, 1)
         feed_dict[num_steps] = num_plan_steps
 
         x_traj, traj_actions, plan_energy = sess.run([x_joint, actions, cum_energies], feed_dict)
 
         # Clip actions in the case of continual reacher
         if FLAGS.datasource == "continual_reacher" or FLAGS.datasource == "reacher":
+            traj_actions = traj_actions + np.random.uniform(-0.05, 0.05, traj_actions.shape)
             traj_actions = np.clip(traj_actions, -1, 1)
 
         if FLAGS.debug:
             print(x_traj[0])
 
+        if FLAGS.datasource == "continual_reacher" and FLAGS.linear_inverse_dynamics:
+            if env_action is not None:
+                traj_actions = linear_reacher_inverse_dynamics(x_traj.squeeze(), env_action, state_matrix)
+        elif FLAGS.datasource == "continual_reacher" and FLAGS.gt_inverse_dynamics:
+            traj_actions = continual_reacher_inverse_dynamics(x_traj.squeeze())
+
         obs = [ob[:, 0, 0, :]]
         dones = []
         diffs = []
         dones_tot = np.zeros(FLAGS.num_env).astype(np.bool)
-        print("Plan energy ", plan_energy.mean(axis=0))
+
+        if FLAGS.adaptive_sample:
+            print("Plan energy ", plan_energy.mean(axis=0))
+
         for bp in range(traj_actions.shape[1]):
+            num_env_steps += 1
+
             if FLAGS.random_action:
                 action = np.random.uniform(-1, 1, traj_actions[:, bp].shape)
             else:
                 action = traj_actions[:, bp]
 
+            env_action = action
             ob, _, done, infos = env.step(action)
 
             dones_tot = (done | dones_tot)
 
             # print("Hand position ", ob[0])
             # print("Action ", action[0])
-            if bp == 0 and FLAGS.datasource != "continual_reacher":
-            #     print(x_traj[0, 0], x_traj[0, 1], ob[0])
+            if bp == 0 and FLAGS.datasource != "continual_reacher" and FLAGS.adaptive_sample:
+                # print(x_traj[0, 0], x_traj[0, 1], ob[0])
             #     target_ob = x_traj[:, bp + 1, 0]
                 print("x_traj", x_traj[0, :, 0])
             #     print("Abs dist: ", np.mean(np.abs(ob - target_ob)))
@@ -517,15 +557,19 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
                 diff = np.abs(x_traj[:, bp + 1, 0, :-3] - ob[:, :-3]).mean()
             else:
                 diff = np.abs(x_traj[:, bp + 1, 0] - ob).max()
+
             diffs.append(diff)
 
             if FLAGS.datasource == "continual_reacher":
-                diff_env = 0.3
-            else:
                 diff_env = 0.5
+            else:
+                diff_env = 0.05
 
-            if ((diff > diff_env) and bp > 1) or dones_tot.any():
+            if ((diff > diff_env)) or dones_tot.any():
                 break
+
+            if FLAGS.linear_inverse_dynamics:
+                update_linear_weight(obs[-2], obs[-1], action, state_matrix, 0.1)
 
         ob = ob[:, None, None, :]
         dones = np.array(dones).transpose()
@@ -599,7 +643,7 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
             _, dyn_loss, dyn_dist, e_pos, e_neg, loss_ml, loss_total, x_grad, action_grad, x_mod = sess.run(log_output,
                                                                                                             feed_dict=feed_dict)
 
-            if e_neg.mean() > 0.05:
+            if (e_neg.mean() - e_pos.mean()) > 0.15 and FLAGS.adaptive_sample:
                 num_plan_steps += 20
 
             kvs = {}
@@ -617,6 +661,7 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
             kvs["diffs_start"] = diffs[0]
             kvs["diffs_end"] = diffs[-1]
             kvs["num_plan_steps"] = num_plan_steps
+            kvs["num_env_steps"] = num_env_steps
 
             epinfos = []
 
@@ -637,7 +682,10 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
         if itr % FLAGS.save_interval == 0:
             saver.save(sess, osp.join(FLAGS.logdir, FLAGS.exp, 'model_{}'.format(itr)))
 
-        if FLAGS.heatmap and itr == 2000:
+            if FLAGS.linear_inverse_dynamics:
+                np.save(osp.join(FLAGS.logdir, FLAGS.exp, 'model_{}.npy'.format(itr)), state_matrix)
+
+        if FLAGS.heatmap and num_env_steps > 16000:
             total_obs = np.concatenate(total_obs, axis=0)
             # total_obs = total_obs[np.random.permutation(total_obs.shape[0])[:1000000]]
             sns.kdeplot(data=total_obs[:, 0], data2=total_obs[:, 1], shade=True)
@@ -1041,8 +1089,9 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
 
             # if i == 0:
             #     cum_energy = tf.Print(cum_energy, [tf.pow(100 * cum_energy, 3)], "Energy on first timestep")
-            cum_energies = cum_energies + ((FLAGS.plan_steps - i / 2) / FLAGS.plan_steps) ** 7  * tf.pow(cum_energy, 3)
+            cum_energies = cum_energies + ((FLAGS.plan_steps - i / 2) / FLAGS.plan_steps) ** 7 * tf.pow(cum_energy, 3)
             # cum_energies = cum_energies + tf.pow(cum_energy, 3)
+            # cum_energies = cum_energies + cum_energy
 
         # cum_energies = tf.Print(cum_energies, [x_joint[0, 0], X_START[0, 0]], "trajectory")
 
@@ -1057,7 +1106,7 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
         # cum_energies = tf.Print(cum_energies, [tf.shape(cum_energies), tf.shape(X_END_EXPAND)], "cumulative energies")
         # score_weights = tf.Print(score_weights, [score_weights])
 
-        # scaler_weight = tf.square(tf.to_float(tf.reshape(tf.range(FLAGS.plan_steps+1) / FLAGS.plan_steps, (1, FLAGS.plan_steps + 1, 1, 1))))
+        scaler_weight = tf.square(tf.to_float(tf.reshape(tf.range(FLAGS.plan_steps+1) / FLAGS.plan_steps, (1, FLAGS.plan_steps + 1, 1, 1))))
         scaler_weight = tf.ones(1) * l2_weight
         if FLAGS.constraint_goal:
             if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
@@ -1088,7 +1137,11 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
         score_weights = tf.reshape(score_weights, (x_joint_shape[0], FLAGS.noise_sim, 1, 1, 1))
 
         x_joint = tf.reduce_sum(x_joint_tile * score_weights, axis=1)
-        x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1]], axis=1)
+        # x_joint = tf.concat([X_START, x_joint[:, 1:FLAGS.plan_steps + 1]], axis=1)
+        x_joint = x_joint[:, :FLAGS.plan_steps + 1]
+
+        if FLAGS.datasource != "continual_reacher":
+            x_joint = tf.clip_by_value(x_joint, -1, 1)
 
         counter = counter + 1
 
