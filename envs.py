@@ -1,6 +1,7 @@
 from collections import namedtuple
 
 import gym
+import math
 import numpy as np
 
 from utils import is_maze_valid, oob
@@ -254,6 +255,61 @@ class Ball(gym.Env):
 
     def seed(self, seed):
         np.random.seed(seed)
+
+
+class ManyBalls(gym.Env):
+    def __init__(self, num_balls=10, cor=None):
+        self.num_balls = num_balls
+        self.radius = 0.05
+        self.pos = [np.random.uniform(low=0.0, high=5.0, size=(2,)) for _ in range(self.num_balls)]
+        self.v = [np.random.uniform(low=-1.0, high=1.0, size=(2,)) for _ in range(self.num_balls)]
+
+        # assume all balls are of the same mass
+        self.mass = [1. for _ in range(self.num_balls)]
+
+        if cor is None:
+            self.cor = np.random.uniform()   # [0.0, 1.0] range
+        elif 0.0 <= cor <= 1.0:
+            self.cor = cor
+        else:
+            raise ValueError("coefficient of restitution must be in [0., 1.] range.")
+
+    def reset(self):
+        self.pos = [np.random.uniform(low=0.0, high=10.0, size=(2,)) for _ in range(self.num_balls)]
+
+    def dist(self, i, j):
+        return np.abs(self.pos[i] - self.pos[j]).sum()
+
+    def collide(self, i, j):
+        vi, vj = self.v[i], self.v[j]
+
+        # solve collision dynamics
+        # (1) conversation of momentum
+        # (2) coefficient of restitution
+        vii = (vi + vj + self.cor * (vj - vi)) / 2.
+        vjj = vi + vj - vii
+        self.v[i] = vii
+        self.v[j] = vjj
+
+    def step(self, action):
+        # irrelevant in this env
+        reward = 0
+        info = {}
+        done = False
+
+        for i in range(self.num_balls):
+            for j in range(self.num_balls):
+                if self.dist(i, j) <= self.radius:
+                    # calculate velocity after collision
+                    self.collide(i, j)
+
+        for i in range(self.num_balls):
+            # update position
+            self.pos[i] += self.v[i]
+
+        observation = self.pos[:]
+
+        return observation, reward, done, info
 
 
 class Reacher(gym.Env):

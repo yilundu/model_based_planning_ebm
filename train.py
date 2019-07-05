@@ -147,6 +147,9 @@ flags.DEFINE_bool('record_reacher_data', False, 'Record the data seen by the rea
 flags.DEFINE_bool('continual_reacher_model', False, 'Use data from the continual_reacher_model')
 flags.DEFINE_bool('render_image', False, 'render images of trajectories for continual_reacher')
 
+# If True, estimate physical params from latent variable
+flags.DEFINE_bool('phy_latent', True, 'If True, estimate physical params from latent variable')
+
 FLAGS.batch_size *= FLAGS.num_gpus
 
 if FLAGS.datasource == 'point':
@@ -1823,6 +1826,11 @@ def main():
             if FLAGS.single_task:
                 # train on a single task
                 dataset = np.tile(dataset[0:1], (100, 1, 1, 1))[:, :20]
+
+            if FLAGS.datasource == 'phy_a' or FLAGS.datasource == 'phy_cor':
+                if FLAGS.phy_latent:
+                    # change physics param input to random noise
+                    dataset[:, :, -1] = np.random.uniform(-1, 1)
 
             split_idx = int(dataset.shape[0] * 0.9)
 
