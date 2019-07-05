@@ -2,6 +2,7 @@ import time
 import os
 import os.path as osp
 import random
+import datetime
 
 import gym
 import imageio
@@ -71,6 +72,7 @@ flags.DEFINE_float('l2_coeff', 1.0, 'Scale of regularization')
 
 flags.DEFINE_integer('num_steps', 0, 'Steps of gradient descent for training ebm')
 flags.DEFINE_integer('num_plan_steps', 10, 'Steps of gradient descent for generating plans')
+flags.DEFINE_bool('random_shuffle', True, 'whether to shuffle input data')
 
 # Architecture Settings
 flags.DEFINE_integer('input_objects', 1, 'Number of objects to predict the trajectory of.')
@@ -270,6 +272,7 @@ def get_avg_step_num(target_vars, sess, env):
             l2_weight = target_vars['l2_weight']
             num_steps = target_vars['num_steps']
             ACTION_PLAN = target_vars['ACTION_PLAN']
+            cum_energies = target_vars['cum_plan_energy']
 
             x_start = current_point[None, None, None, :]
             x_end = end_point[None, None, None, :]
@@ -283,15 +286,17 @@ def get_avg_step_num(target_vars, sess, env):
                 x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, FLAGS.latent_dim))
 
             if FLAGS.cond:
-                actions = np.random.uniform(-1.0, 1.0, (1, FLAGS.plan_steps + 1, 2))
+                actions = np.random.uniform(-1.0, 1.0, (1, FLAGS.plan_steps + 1, FLAGS.action_dim))
                 x_joint, actions = sess.run([x_joint, output_actions],
                                             {X_START: x_start, X_END: x_end,
                                              X_PLAN: x_plan, ACTION_PLAN: actions})
             else:
                 ACTION_PLAN = target_vars['ACTION_PLAN']
-                actions = np.random.uniform(-1.0, 1.0, (1, FLAGS.plan_steps + 1, 2))
-                x_joint, output_actions = sess.run([x_joint, output_actions],
+                actions = np.random.uniform(-0.1, 0.1, (1, FLAGS.plan_steps, FLAGS.action_dim))
+                x_joint, output_actions, output_energy = sess.run([x_joint, output_actions, cum_energies],
                         {X_START: x_start, X_END: x_end, X_PLAN: x_plan, l2_weight: 1.0, num_steps: FLAGS.num_plan_steps, ACTION_PLAN: actions})
+
+                print("Output energies ", output_energy)
                 # output_actions = output_actions[None, :, :]
 
             if FLAGS.linear_inverse_dynamics:
@@ -319,7 +324,7 @@ def get_avg_step_num(target_vars, sess, env):
                         break
 
             else:
-                for i in range(output_actions.shape[1]):
+                for i in range(x_joint.shape[1]-1):
                     if FLAGS.datasource == "continual_reacher" and FLAGS.gt_inverse_dynamics:
                         target = x_joint[:, i+1, 0, :]
                         trajectory = np.concatenate([obs.squeeze()[None, None, :], target[:, None, :]], axis=1)
@@ -554,7 +559,7 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
             x_end = np.tile(np.array([[0.5, 0.5]]), (FLAGS.num_env, 1))[:, None, None, :]
 
         feed_dict = {X_START: ob, X_PLAN: x_plan, X_END: x_end, ACTION_PLAN: action_plan}
-        feed_dict[l2_weight] = min(itr / 1000, 1)
+        feed_dict[l2_weight] = min(itr / 200, 1)
         feed_dict[num_steps] = num_plan_steps
 
         x_traj, traj_actions, plan_energy = sess.run([x_joint, actions, cum_energies], feed_dict)
@@ -619,8 +624,8 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
             diffs.append(diff)
 
             if FLAGS.datasource == "continual_reacher":
-                if diff < 0.7:
-                    diff_env = 0.3
+                if diff < 0.2:
+                    diff_env = 0.1
                 else:
                     diff_env = 2000
             else:
@@ -863,14 +868,26 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
     gd_steps = 1
 
     print(dataloader.shape)
+
+    # Generated correlated experience by tiling values a bunch of times
+    if not FLAGS.random_shuffle:
+        dataloader = np.tile(dataloader[:, None, :, :, :], (1, 100, 1, 1, 1))
+        actions = np.tile(actions[:, None, :, :], (1, 100, 1, 1))
+
+        dataloader = dataloader.reshape((-1, *dataloader.shape[2:]))
+        actions = actions.reshape((-1, *actions.shape[2:]))
+
     random_combo = list(product(range(FLAGS.total_frame, dataloader.shape[1]+1),
                                 range(0, dataloader.shape[0] - FLAGS.batch_size, FLAGS.batch_size)))
 
     replay_buffer = ReplayBuffer(10000)
 
     for epoch in range(FLAGS.epoch_num):
-        random.shuffle(random_combo)
-        perm_idx = np.random.permutation(dataloader.shape[0])
+        if FLAGS.random_shuffle:
+            random.shuffle(random_combo)
+        # perm_idx = np.random.permutation(dataloader.shape[0])
+        perm_idx = np.arange(dataloader.shape[0], dtype=np.int32)
+
         for j, i in random_combo:
             label = dataloader[:, j - FLAGS.total_frame:j]
             label_i = label[perm_idx[i:i + FLAGS.batch_size]]
@@ -1284,7 +1301,7 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
     else:
         steps, x_joint, actions = tf.while_loop(c, mcmc_step, (steps, x_joint, actions))
 
-    if FLAGS.gt_inverse_dynamics and FLAGS.datasource != "reacher" and FLAGS.datasource != "continual_reacher":
+    if FLAGS.gt_inverse_dynamics:
         actions = tf.clip_by_value(20.0 * (x_joint[:, 1:, 0] - x_joint[:, :-1, 0]), -1.0, 1.0)
     else:
         idyn_model = TrajInverseDynamics(dim_output=FLAGS.action_dim, dim_input=FLAGS.latent_dim)
@@ -1363,6 +1380,7 @@ def construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN,
     target_vars['X_END'] = X_END
     target_vars['X_PLAN'] = X_PLAN
     target_vars['ACTION_PLAN'] = ACTION_PLAN
+    target_vars['cum_plan_energy'] = tf.zeros(1)
 
     return target_vars
 
