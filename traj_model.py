@@ -156,11 +156,11 @@ class TrajNetLatentFC(object):
 
         energy = tf.matmul(h3, weights['w6'])
 
-        if FLAGS.opt_low:
+        if opt_low:
             _, var = tf.nn.moments(h3, [1])
             std = tf.sqrt(tf.expand_dims(var, 1))
             # std = tf.Print(std, [std], "std")
-            energy = energy - std
+            energy = energy - 1 * std
             # energy = tf.Print(energy, [energy, std], message="relative scale of energy/std")
 
         return energy

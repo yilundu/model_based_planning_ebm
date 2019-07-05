@@ -953,4 +953,4 @@ def is_maze_valid(dat):
 
 
 def oob(x):
-    return (x < -1) | (x > 1)
+    return (x <= -0.99) | (x >= 0.99)

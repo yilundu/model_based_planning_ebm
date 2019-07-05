@@ -3,7 +3,7 @@ from collections import namedtuple
 import gym
 import numpy as np
 
-from utils import is_maze_valid
+from utils import is_maze_valid, oob
 
 Rectangle = namedtuple('Rectangle', 'xmin ymin xmax ymax')
 
@@ -128,6 +128,8 @@ class Maze(gym.Env):
         reward = -1 * dist
 
         if dist < self.eps:
+            done = True
+        elif np.any(oob(temp[None, :]), axis=1)[0]:
             done = True
         else:
             done = False

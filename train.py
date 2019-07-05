@@ -1,4 +1,4 @@
-import datetime
+import time
 import os
 import os.path as osp
 import random
@@ -28,6 +28,7 @@ from utils import ReplayBuffer, log_step_num_exp, parse_valid_obs, safemean
 from traj_utils import continual_reacher_inverse_dynamics, process_trajectory, linear_reacher_inverse_dynamics, update_linear_weight
 
 import seaborn as sns
+import pandas as pd
 
 from trajopt.envs.continual_reacher_env import ContinualReacher7DOFEnv
 from envs import Point, Maze, Reacher, Ball
@@ -136,6 +137,13 @@ flags.DEFINE_float('l_coeff', 0.0, 'l2 to last state coefficient')
 flags.DEFINE_float('a_coeff', 1.0, 'acceleration coefficient')
 flags.DEFINE_float('traj_scale', 1.0, 'scaling on smooth trajectories')
 flags.DEFINE_bool('adaptive_sample', True, 'whether to adaptively sample')
+flags.DEFINE_bool('energy_heatmap', False, 'generate energy heatmap')
+
+# Custom stats for continual reacher
+flags.DEFINE_bool('end_effector_stat', False, 'Track positions of the finger')
+flags.DEFINE_bool('record_reacher_data', False, 'Record the data seen by the reacher')
+flags.DEFINE_bool('continual_reacher_model', False, 'Use data from the continual_reacher_model')
+flags.DEFINE_bool('render_image', False, 'render images of trajectories for continual_reacher')
 
 FLAGS.batch_size *= FLAGS.num_gpus
 
@@ -182,6 +190,34 @@ def smooth_trajectory_tf(scale):
 
     sample = mvn.sample((FLAGS.num_env * FLAGS.noise_sim * FLAGS.latent_dim,))
     return sample
+
+
+def construct_energy_heatmap(target_vars, it, sess):
+    # Construct a heat map of transition energies
+    energy_pos = target_vars['energy_pos']
+    X = target_vars['X']
+
+    base_path = osp.join(FLAGS.logdir, FLAGS.exp)
+
+    n = 300
+    lim = 1
+    x, y = np.meshgrid(np.linspace(-lim, lim, n), np.linspace(-lim, lim, n))
+    coord = np.concatenate([x.flatten()[:, None], y.flatten()[:, None]], axis=1)
+
+    start = coord - 0.01
+    end = coord + 0.01
+
+    x_traj = np.stack([start, end], axis=1)[:, :, None, :]
+
+    energy_pos = sess.run([energy_pos], {X: x_traj})[0]
+    energy_pos = energy_pos.reshape((n, n))
+
+    lim_labels = np.round(np.linspace(-lim, lim, n), 2)
+    df = pd.DataFrame(data=energy_pos, index=lim_labels, columns=lim_labels)
+    ax = sns.heatmap(df)
+    ax.invert_yaxis()
+    plt.savefig(osp.join(base_path, "energy_{}.png".format(it)))
+    plt.clf()
 
 
 def rescale_ob(ob, forward=True):
@@ -233,6 +269,7 @@ def get_avg_step_num(target_vars, sess, env):
             output_actions = target_vars['actions']
             l2_weight = target_vars['l2_weight']
             num_steps = target_vars['num_steps']
+            ACTION_PLAN = target_vars['ACTION_PLAN']
 
             x_start = current_point[None, None, None, :]
             x_end = end_point[None, None, None, :]
@@ -240,17 +277,21 @@ def get_avg_step_num(target_vars, sess, env):
             if FLAGS.smooth_path:
                 x_plan = np.tile(x_start, (1, FLAGS.plan_steps, 1, 1))
             else:
+                # x_end = np.random.uniform(-1, 1, (FLAGS.num_env, 1, 1, FLAGS.latent_dim))
+                # frac = (np.arange(FLAGS.plan_steps) / (FLAGS.plan_steps - 1))[None, :, None, None]
+                # x_plan = (1 - frac) * x_start + frac * x_end
                 x_plan = np.random.uniform(-1, 1, (1, FLAGS.plan_steps, 1, FLAGS.latent_dim))
 
             if FLAGS.cond:
-                ACTION_PLAN = target_vars['ACTION_PLAN']
                 actions = np.random.uniform(-1.0, 1.0, (1, FLAGS.plan_steps + 1, 2))
                 x_joint, actions = sess.run([x_joint, output_actions],
                                             {X_START: x_start, X_END: x_end,
                                              X_PLAN: x_plan, ACTION_PLAN: actions})
             else:
+                ACTION_PLAN = target_vars['ACTION_PLAN']
+                actions = np.random.uniform(-1.0, 1.0, (1, FLAGS.plan_steps + 1, 2))
                 x_joint, output_actions = sess.run([x_joint, output_actions],
-                        {X_START: x_start, X_END: x_end, X_PLAN: x_plan, l2_weight: 1.0, num_steps: FLAGS.num_plan_steps})
+                        {X_START: x_start, X_END: x_end, X_PLAN: x_plan, l2_weight: 1.0, num_steps: FLAGS.num_plan_steps, ACTION_PLAN: actions})
                 # output_actions = output_actions[None, :, :]
 
             if FLAGS.linear_inverse_dynamics:
@@ -289,6 +330,7 @@ def get_avg_step_num(target_vars, sess, env):
                     else:
                         action = output_actions[:, i, :]
                         obs, reward, done, _ = env.step(action[0])
+
                     target_obs = x_joint[0, i + 1, 0]
                     cum_reward += reward
 
@@ -301,12 +343,12 @@ def get_avg_step_num(target_vars, sess, env):
                         kill = True
                         break
 
-                    if FLAGS.datasource == "continual_reacher":
+                    if FLAGS.datasource == "continual_reacher" and FLAGS.render_image:
                         im = env.sim.render(256, 256)
                         ims.append(im)
 
                     if FLAGS.datasource == "continual_reacher":
-                        diff_dist = 0.3
+                        diff_dist = 1.0
                     else:
                         diff_dist = 0.55
 
@@ -326,7 +368,7 @@ def get_avg_step_num(target_vars, sess, env):
             if FLAGS.score_reward and len(points) > 1000:
                 break
 
-        if FLAGS.datasource == "continual_reacher":
+        if FLAGS.datasource == "continual_reacher" and FLAGS.render_image:
             print(obs[-6:])
             imageio.mimwrite("traj.gif", ims)
             print("Saved trajectory at traj.gif!!!")
@@ -440,7 +482,12 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
     loss_total = target_vars['total_loss']
     dyn_loss = target_vars['dyn_loss']
     dyn_dist = target_vars['dyn_dist']
-    cum_energies = target_vars['cum_plan_energy']
+
+    if not FLAGS.ff_model:
+        cum_energies = target_vars['cum_plan_energy']
+    else:
+        cum_energies = tf.zeros(1)
+
     num_steps = target_vars['num_steps']
     LR = target_vars['lr']
     l2_weight = target_vars['l2_weight']
@@ -471,6 +518,17 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
     state_matrix = np.zeros((17, 24))
     env_action = None
     num_env_steps = 0
+    heatmap_counter = 0
+
+    coord = np.linspace(-1, 1, 10)
+    x, y, z = np.meshgrid(coord, coord, coord)
+    cube_3d_low = np.stack([x, y, z], axis=3)
+    cube_3d_high = np.stack([x, y, z], axis=3) + 4 / 20
+
+    cube_3d_low = cube_3d_low.reshape((-1, 3))
+    cube_3d_high = cube_3d_high.reshape((-1, 3))
+
+    occupancy = np.zeros([cube_3d_low.shape[0], 1], dtype=np.bool)
 
     for itr in range(resume_iter, tot_iter):
         if itr != resume_iter:
@@ -496,15 +554,15 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
             x_end = np.tile(np.array([[0.5, 0.5]]), (FLAGS.num_env, 1))[:, None, None, :]
 
         feed_dict = {X_START: ob, X_PLAN: x_plan, X_END: x_end, ACTION_PLAN: action_plan}
-        feed_dict[l2_weight] = min(itr / 200, 1)
+        feed_dict[l2_weight] = min(itr / 1000, 1)
         feed_dict[num_steps] = num_plan_steps
 
         x_traj, traj_actions, plan_energy = sess.run([x_joint, actions, cum_energies], feed_dict)
 
         # Clip actions in the case of continual reacher
-        if FLAGS.datasource == "continual_reacher" or FLAGS.datasource == "reacher":
-            traj_actions = traj_actions + np.random.uniform(-0.05, 0.05, traj_actions.shape)
-            traj_actions = np.clip(traj_actions, -1, 1)
+        # if FLAGS.datasource == "continual_reacher" or FLAGS.datasource == "reacher":
+        #     traj_actions = traj_actions + np.random.uniform(-0.05, 0.05, traj_actions.shape)
+        #     traj_actions = np.clip(traj_actions, -1, 1)
 
         if FLAGS.debug:
             print(x_traj[0])
@@ -538,7 +596,7 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
 
             # print("Hand position ", ob[0])
             # print("Action ", action[0])
-            if bp == 0 and FLAGS.datasource != "continual_reacher" and FLAGS.adaptive_sample:
+            if bp == 0 and FLAGS.datasource != "continual_reacher":
                 # print(x_traj[0, 0], x_traj[0, 1], ob[0])
             #     target_ob = x_traj[:, bp + 1, 0]
                 print("x_traj", x_traj[0, :, 0])
@@ -561,11 +619,21 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
             diffs.append(diff)
 
             if FLAGS.datasource == "continual_reacher":
-                diff_env = 0.5
+                if diff < 0.7:
+                    diff_env = 0.3
+                else:
+                    diff_env = 2000
             else:
-                diff_env = 0.05
+                diff_env = 0.7
 
-            if ((diff > diff_env)) or dones_tot.any():
+            if FLAGS.end_effector_stat and FLAGS.datasource == "continual_reacher":
+                ob_effector = ob[:, -6:-3]
+                low_mask = (ob_effector[:, None, :] > cube_3d_low[None, :, :]).all(axis=2)
+                high_mask = (ob_effector[:, None, :] < cube_3d_high[None, :, :]).all(axis=2)
+                occupancy = occupancy | (low_mask & high_mask).any(axis=0)[:, None]
+
+            if (((diff > diff_env)) or dones_tot.any()) and not FLAGS.random_action:
+                # print("Broke on ")
                 break
 
             if FLAGS.linear_inverse_dynamics:
@@ -624,6 +692,14 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
             else:
                 ob_pair, action = sample_ob, sample_actions
 
+        if FLAGS.record_reacher_data:
+            if FLAGS.datasource == "continual_reacher" and len(pos_replay_buffer) > 900000:
+                dat = np.array(pos_replay_buffer._storage[:900000])
+                sample_ob = dat[:, :, 0, :-FLAGS.action_dim]
+                sample_actions = dat[:, 0, 0, -FLAGS.action_dim:]
+                np.savez("data/continual_reacher_model.npz", ob=sample_ob, action=sample_actions)
+                assert False
+
         feed_dict = {X: ob_pair, X_NOISE: x_noise_neg, ACTION_NOISE: action_noise_neg, LR: FLAGS.lr}
         # print("x_noise_neg ", x_noise_neg)
 
@@ -638,6 +714,39 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
             feed_dict[X_NOISE] = np.concatenate([feed_dict[X_NOISE], replay_batch], axis=0)
 
         # print("Normalization statistics ", feed_dict[X_NOISE].mean(axis=(0, 1)), feed_dict[X_NOISE].std(axis=(0, 1)))
+
+        if num_env_steps > 200 * heatmap_counter and FLAGS.energy_heatmap:
+            construct_energy_heatmap(target_vars, num_env_steps, sess)
+            total_obs_concat = np.concatenate(total_obs, axis=0)
+            ax = plt.gca()
+            # ax.set_ylim(-1, 1)
+            # ax = sns.kdeplot(data=total_obs_concat[:, 0], data2=total_obs_concat[:, 1], shade=True, ax=ax)
+
+            n = 20
+            lim = 1
+            x, y = np.meshgrid(np.linspace(-lim, lim, n), np.linspace(-lim, lim, n))
+            coord_low = np.concatenate([x.flatten()[:, None], y.flatten()[:, None]], axis=1)
+            coord_high = coord_low + (2*lim) / n
+            low_mask = (total_obs_concat[:, None, :] > coord_low[None, :, :]).all(axis=2)
+            high_mask = (total_obs_concat[:, None, :] < coord_high[None, :, :]).all(axis=2)
+            joint_mask = (low_mask & high_mask).astype(np.int32)
+            # print("joint_mask sum ", joint_mask.sum())
+
+            # if itr >= 100:
+            #     assert False
+
+            counts = joint_mask.sum(axis=0).reshape((n, n))
+            counts = np.log(counts+1)
+
+            lim_labels = np.round(np.linspace(-lim, lim, n), 2)
+            df = pd.DataFrame(data=counts, index=lim_labels, columns=lim_labels)
+            ax = sns.heatmap(df)
+            ax.invert_yaxis()
+
+            plt.savefig(osp.join(FLAGS.logdir, FLAGS.exp, "kde_{}.png".format(num_env_steps)))
+            plt.clf()
+
+            heatmap_counter += 1
 
         if itr % FLAGS.log_interval == 0:
             _, dyn_loss, dyn_dist, e_pos, e_neg, loss_ml, loss_total, x_grad, action_grad, x_mod = sess.run(log_output,
@@ -662,6 +771,7 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
             kvs["diffs_end"] = diffs[-1]
             kvs["num_plan_steps"] = num_plan_steps
             kvs["num_env_steps"] = num_env_steps
+            kvs["end_effector_occupancy"] = occupancy.sum()
 
             epinfos = []
 
@@ -685,11 +795,32 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
             if FLAGS.linear_inverse_dynamics:
                 np.save(osp.join(FLAGS.logdir, FLAGS.exp, 'model_{}.npy'.format(itr)), state_matrix)
 
-        if FLAGS.heatmap and num_env_steps > 16000:
+        if FLAGS.heatmap and num_env_steps > 4000:
             total_obs = np.concatenate(total_obs, axis=0)
-            # total_obs = total_obs[np.random.permutation(total_obs.shape[0])[:1000000]]
-            sns.kdeplot(data=total_obs[:, 0], data2=total_obs[:, 1], shade=True)
-            plt.savefig("kde.png")
+
+            n = 20
+            lim = 1
+            x, y = np.meshgrid(np.linspace(-lim, lim, n), np.linspace(-lim, lim, n))
+            coord_low = np.concatenate([x.flatten()[:, None], y.flatten()[:, None]], axis=1)
+            coord_high = coord_low + (2*lim) / n
+            low_mask = (total_obs_concat[:, None, :] > coord_low[None, :, :]).all(axis=2)
+            high_mask = (total_obs_concat[:, None, :] < coord_high[None, :, :]).all(axis=2)
+            joint_mask = (low_mask & high_mask).astype(np.int32)
+            # print("joint_mask sum ", joint_mask.sum())
+
+            # if itr >= 100:
+            #     assert False
+
+            counts = joint_mask.sum(axis=0).reshape((n, n))
+            counts = np.log(counts+1)
+
+            lim_labels = np.round(np.linspace(-lim, lim, n), 2)
+            df = pd.DataFrame(data=counts, index=lim_labels, columns=lim_labels)
+            ax = sns.heatmap(df)
+            ax.invert_yaxis()
+
+            plt.savefig(osp.join(FLAGS.logdir, FLAGS.exp, "kde_{}.png".format(num_env_steps)))
+            plt.clf()
             assert False
 
 
@@ -732,7 +863,7 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
     gd_steps = 1
 
     print(dataloader.shape)
-    random_combo = list(product(range(FLAGS.total_frame, dataloader.shape[1] - FLAGS.total_frame),
+    random_combo = list(product(range(FLAGS.total_frame, dataloader.shape[1]+1),
                                 range(0, dataloader.shape[0] - FLAGS.batch_size, FLAGS.batch_size)))
 
     replay_buffer = ReplayBuffer(10000)
@@ -758,7 +889,7 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter):
             # print("X label", (label_i[:, 1, 0] - label_i[:, 0, 0]) - feed_dict[ACTION_LABEL] / 20)
             # assert False
 
-            if len(replay_buffer) > FLAGS.batch_size:
+            if len(replay_buffer) > FLAGS.batch_size and FLAGS.replay_batch and not FLAGS.ff_model:
                 replay_batch = replay_buffer.sample(FLAGS.batch_size)
                 replay_mask = (np.random.uniform(0, 1, (FLAGS.batch_size)) > 0.05)
                 # replay_batch = np.clip(replay_batch, -1, 1)
@@ -1185,6 +1316,11 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
 def construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN, target_vars={}):
     actions = ACTION_PLAN
     steps = tf.constant(0)
+    l2_weight = tf.placeholder(shape=None, dtype=tf.float32)
+    num_steps = tf.placeholder(shape=None, dtype=tf.float32)
+    target_vars['l2_weight'] = l2_weight
+    target_vars['num_steps'] = num_steps
+
     c = lambda i, x, y: tf.less(i, FLAGS.num_steps)
 
     def mcmc_step(counter, actions, x_vals):
@@ -1192,7 +1328,7 @@ def construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN,
 
         x_val = X_START
         x_vals = []
-        for i in range(FLAGS.plan_steps + 1):
+        for i in range(FLAGS.plan_steps):
             x_val = model.forward(x_val, weights, action_label=actions[:, i])
             x_vals.append(x_val)
 
@@ -1205,6 +1341,8 @@ def construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN,
 
         if FLAGS.datasource == "reacher":
             energy = tf.reduce_sum(tf.square(x_val[:, :2] - X_END[:, 0, 0]))
+        elif FLAGS.datasource == "continual_reacher":
+            energy = tf.reduce_sum(tf.square(x_val[:, -6:-3] - X_END[:, 0, 0]))
         else:
             energy = tf.reduce_sum(tf.square(x_val - X_END[:, 0, 0]))
 
@@ -1217,7 +1355,7 @@ def construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN,
         return counter, actions, x_vals
 
     steps, actions, x_joint = tf.while_loop(c, mcmc_step,
-                                            (steps, actions, tf.concat([X_START, X_PLAN], axis=1)[:, :, 0]))
+                                            (steps, actions, X_PLAN[:, :, 0]))
 
     target_vars['x_joint'] = tf.expand_dims(x_joint, axis=2)
     target_vars['actions'] = actions
@@ -1229,8 +1367,7 @@ def construct_ff_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_PLAN,
     return target_vars
 
 
-def construct_ff_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, optimizer):
-    target_vars = {}
+def construct_ff_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, optimizer, target_vars={}):
     x_mods = []
 
     x_pred = model.forward(X[:, 0, 0], weights, action_label=ACTION_LABEL)
@@ -1266,9 +1403,11 @@ def construct_ff_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LA
     target_vars['train_op'] = train_op
 
     target_vars['loss_ml'] = tf.zeros(1)
-    target_vars['loss_total'] = loss_total
+    target_vars['total_loss'] = loss_total
     target_vars['gvs'] = gvs
     target_vars['loss_energy'] = tf.zeros(1)
+    target_vars['ff_loss'] = loss_total
+    target_vars['ff_dist'] = tf.zeros(1)
 
     target_vars['weights'] = weights
     target_vars['X'] = X
@@ -1282,12 +1421,12 @@ def construct_ff_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LA
     target_vars['temp'] = FLAGS.temperature
     target_vars['ACTION_LABEL'] = ACTION_LABEL
     target_vars['ACTION_NOISE_LABEL'] = ACTION_NOISE_LABEL
+    target_vars['progress_diff'] = tf.zeros(1)
 
     return target_vars
 
 
-def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, LR, optimizer):
-    target_vars = {}
+def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, LR, optimizer, target_vars={}):
     x_mods = []
 
     energy_pos = model.forward(X, weights, action_label=ACTION_LABEL)
@@ -1345,7 +1484,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
         energy_noise = model.forward(x_mod, weights, action_label=action_label, reuse=True, stop_at_grad=True)
 
         energy_noise = tf.reshape(energy_noise, (x_mod_shape[0], FLAGS.noise_sim))
-        score_weights = tf.nn.softmax(-energy_noise*10000, axis=1)
+        score_weights = tf.nn.softmax(-energy_noise*50000, axis=1)
         score_weights = tf.reshape(score_weights, (x_mod_shape[0], FLAGS.noise_sim, 1, 1, 1))
         x_mod = tf.reduce_sum(x_mod_tile * score_weights, axis=1)
 
@@ -1513,7 +1652,6 @@ def main():
         X = tf.placeholder(shape=(None, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim), dtype=tf.float32)
 
         ACTION_LABEL = tf.placeholder(shape=(None, FLAGS.action_dim), dtype=tf.float32)
-
         ACTION_NOISE_LABEL = tf.placeholder(shape=(None, FLAGS.action_dim), dtype=tf.float32)
         ACTION_PLAN = tf.placeholder(shape=(None, FLAGS.plan_steps, FLAGS.action_dim), dtype=tf.float32)
 
@@ -1538,12 +1676,14 @@ def main():
     optimizer = AdamOptimizer(LR, beta1=0.0, beta2=0.999)
 
     target_vars = {}
+    target_vars['lr'] = LR
+
 
     if FLAGS.train or FLAGS.debug:
         if FLAGS.ff_model:
-            target_vars = construct_ff_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, optimizer)
+            target_vars = construct_ff_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, optimizer, target_vars=target_vars)
         else:
-            target_vars = construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, LR, optimizer)
+            target_vars = construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL, LR, optimizer, target_vars=target_vars)
 
     print(target_vars.keys())
 
@@ -1627,9 +1767,15 @@ def main():
             get_avg_step_num(target_vars, sess, env)
 
         else:
-            data = np.load(FLAGS.datadir + FLAGS.datasource + '.npz')
-            dataset = data['obs'][:, :, None, :]
-            actions = data['action']
+            if FLAGS.continual_reacher_model:
+                data = np.load(FLAGS.datadir + 'continual_reacher_model.npz')
+                dataset = data['ob'][:, :, None, :]
+                actions = data['action']
+                actions = np.tile(actions[:, None, :], (1, 2, 1))
+            else:
+                data = np.load(FLAGS.datadir + FLAGS.datasource + '.npz')
+                dataset = data['obs'][:, :, None, :]
+                actions = data['action']
 
             if FLAGS.datasource == 'point' or FLAGS.datasource == 'maze' \
                     or FLAGS.datasource == 'phy_a' or FLAGS.datasource == 'phy_cor':
@@ -1654,8 +1800,6 @@ def main():
                 dataset = np.concatenate([dataset[:, 49:99], dataset[:, [99] + list(range(49))]], axis=0)
                 actions = np.concatenate([actions[:, 49:99], actions[:, [99] + list(range(49))]], axis=0)
             elif FLAGS.datasource == 'continual_reacher':
-                dataset = data['obs'][:, :, None, :]
-                actions = data['action']
                 mean, std = 0, 1
 
             if FLAGS.single_task:
