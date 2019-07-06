@@ -4,7 +4,8 @@ from trajopt.envs.reacher_env import Reacher7DOFEnv
 
 class ContinualReacher7DOFEnv(Reacher7DOFEnv):
     def __init__(self, train=True):
-        self.count = np.random.randint(-10, 10)
+        # self.count = np.random.randint(-10, 10)
+        self.count = 0
         super().__init__()
         self.env_name = 'continual_reacher_7dof'
         self.train = train
