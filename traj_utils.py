@@ -20,7 +20,7 @@ def get_score(ob, goal):
     return score
 
 
-def process_trajectory(traj):
+def process_trajectory(traj, large=False):
     env = ContinualReacher7DOFEnv()
     env.reset()
     sim = env.sim
@@ -30,15 +30,17 @@ def process_trajectory(traj):
 
     mean = np.zeros(env.action_dim)
 
-    sigma = 0.20
-    n_sim = 10
-    n_iter = 10
-    kappa = 25
+    if large:
+        sigma = 0.15
+        n_sim = 100
+        n_iter = 40
+        kappa = 25
+    else:
+        sigma = 0.20
+        n_sim = 10
+        n_iter = 10
+        kappa = 25
 
-    # sigma = 0.15
-    # n_sim = 100
-    # n_iter = 40
-    # kappa = 25
 
     for i in range(traj.shape[0]-1):
         random_action = np.random.uniform(-0.3, 0.3, (7,))
@@ -92,7 +94,11 @@ def linear_reacher_inverse_dynamics(x_traj, action, state_matrix):
 
 def linear_reacher_helper(s1, s2, a_prev, state_matrix):
 
-    lam = 0.2
+    # print(s1.shape)
+    # print(s2.shape)
+    # print(a_prev.shape)
+    # print(state_matrix.shape)
+    lam = 0.1
     # Generate target of the form dxn
     target = (s2.transpose() - state_matrix[:, :17].dot(s1.transpose())).squeeze()
     target_2 = lam * a_prev.transpose().squeeze()
@@ -105,6 +111,11 @@ def linear_reacher_helper(s1, s2, a_prev, state_matrix):
     target = np.concatenate([target, target_2], axis=0)
     m = np.concatenate([m1, m2], axis=0)
     controls, _, _, _ = np.linalg.lstsq(m, target)
+    # print(m)
+    # print(target)
+    # print(controls.shape)
+    # print(controls)
+    # assert False
 
     controls = controls.transpose()
 
@@ -116,7 +127,7 @@ def update_linear_weight(s1, s2, a, state_matrix, alpha):
     s2 = s2[:, :-3]
 
     concat_state = np.concatenate([s1, a], axis=1)
-    col = s1 - state_matrix.dot(concat_state.transpose()).transpose() / (np.linalg.norm(concat_state, axis=1, keepdims=True) + alpha)
+    col = (s1 - state_matrix.dot(concat_state.transpose()).transpose()) / (np.linalg.norm(concat_state, axis=1, keepdims=True) ** 2 + alpha)
 
     state_update = (col[:, :, None] * concat_state[:, None, :]).mean(axis=0)
 

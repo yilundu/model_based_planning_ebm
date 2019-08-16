@@ -1,6 +1,7 @@
 import numpy as np
 from trajopt.envs.reacher_env import Reacher7DOFEnv
 
+n = 1000
 
 class ContinualReacher7DOFEnv(Reacher7DOFEnv):
     def __init__(self, train=True):
@@ -27,7 +28,8 @@ class ContinualReacher7DOFEnv(Reacher7DOFEnv):
         #     self.target_reset()
 
 
-        if (self.env_timestep % (100 + self.count) == 0 or (dist < 0.10 and not self.train)) and not (target_pos.sum() == 0):
+        # if (self.env_timestep % (n + self.count) == 0 or (dist < 0.10 and not self.train)) and not (target_pos.sum() == 0):
+        if (self.env_timestep % (n + self.count)) == 0 and not (target_pos.sum() == 0):
             done = True
         else:
             done = False
@@ -39,7 +41,7 @@ class ContinualReacher7DOFEnv(Reacher7DOFEnv):
         self.reset_model()
 
         if not self.train:
-            self.count = 100
+            self.count = n
 
         self.model.site_pos[self.target_sid] = [0.1, 0.1, 0.1]
 

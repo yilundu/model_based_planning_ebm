@@ -32,14 +32,18 @@ def collect_stats(path):
     random_effector, random_env_steps = load_exp(random_action_exp)
     directed_effector, directed_env_steps = load_exp(directed_exp)
 
-    random_ax, = plt.plot(random_env_steps, random_effector)
-    directed_ax, = plt.plot(directed_env_steps, directed_effector)
+    max_occupancy = directed_effector.max()
+    random_effector = random_effector / max_occupancy * 100.
+    directed_effector = directed_effector / max_occupancy * 100.
+
+    random_ax, = plt.semilogx(random_env_steps, random_effector)
+    directed_ax, = plt.semilogx(directed_env_steps, directed_effector)
     directed_max_steps = directed_env_steps.max()
-    plt.xlabel("Environment Steps")
-    plt.ylabel("Occupancy")
+    plt.xlabel("Environment Steps (Log)")
+    plt.ylabel("Occupancy (%)")
     plt.title("Finger 3D Occupancy")
 
-    plt.xlim(0, directed_max_steps)
+    # plt.xlim(0, directed_max_steps)
     plt.legend((random_ax, directed_ax), ('Random', 'EBM'))
     plt.tight_layout()
     plt.savefig("end_effector_explore.pdf")

@@ -256,6 +256,7 @@ def get_avg_step_num(target_vars, sess, env):
     if FLAGS.linear_inverse_dynamics:
         state_matrix = np.load(osp.join(FLAGS.logdir, FLAGS.exp, 'model_{}.npy'.format(FLAGS.resume_iter)))
 
+
     for i in range(n_exp):
         points = []
         cum_rewards = []
@@ -338,13 +339,14 @@ def get_avg_step_num(target_vars, sess, env):
                     if FLAGS.datasource == "continual_reacher" and FLAGS.gt_inverse_dynamics:
                         target = x_joint[:, i+1, 0, :]
                         trajectory = np.concatenate([obs.squeeze()[None, None, :], target[:, None, :]], axis=1)
-                        action = process_trajectory(trajectory[0]).squeeze()
+                        action = process_trajectory(trajectory[0], large=True).squeeze()
                         print("action shape ", action.shape)
 
                         obs, reward, done, _ = env.step(action)
                     else:
-                        action = output_actions[:, i, :]
-                        obs, reward, done, _ = env.step(action[0])
+                        action = output_actions[:, i]
+                        print(action)
+                        obs, reward, done, _ = env.step(action)
 
                     target_obs = x_joint[0, i + 1, 0]
                     cum_reward += reward
@@ -545,7 +547,7 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
 
     occupancy = np.zeros([cube_3d_low.shape[0], 1], dtype=np.bool)
 
-    prev_bp = 1
+    prev_bp = 0
     cum_bp = 0
     for itr in range(resume_iter, tot_iter):
         if itr != resume_iter:
@@ -561,9 +563,11 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
 
         if FLAGS.ff_model:
             x_plan = np.random.uniform(-1.0, 1.0, (FLAGS.num_env, FLAGS.plan_steps, 1, FLAGS.latent_dim))
-
         else:
-            x_plan = np.concatenate([x_traj[:, 2:], x_traj[:, -1:]], axis=1)
+            # print("x_traj, x_plan shape ", x_traj.shape, x_plan.shape)
+            print("x_traj shape ", x_traj.shape, prev_bp)
+            print("shapes ", x_traj[:, 1+prev_bp+1:].shape, np.tile(x_traj[:, -1:], (1, prev_bp+1, 1, 1)).shape)
+            x_plan = np.concatenate([x_traj[:, 1+prev_bp+1:], np.tile(x_traj[:, -1:], (1, prev_bp+1, 1, 1))], axis=1)
         action_plan = np.concatenate([action_plan[:, 1:], action_plan[:, -1:]], axis=1)
 
         if FLAGS.datasource == "maze":
@@ -592,6 +596,10 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
         if FLAGS.datasource == "continual_reacher" and FLAGS.linear_inverse_dynamics:
             if env_action is not None:
                 traj_actions = linear_reacher_inverse_dynamics(x_traj.squeeze(), env_action, state_matrix)
+                # print(traj_actions.shape)
+                # assert False
+                traj_actions = np.clip(traj_actions, -1, 1)
+                # print(state_matrix)
         elif FLAGS.datasource == "continual_reacher" and FLAGS.gt_inverse_dynamics:
             traj_actions = continual_reacher_inverse_dynamics(x_traj.squeeze())
 
@@ -641,10 +649,7 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
             diffs.append(diff)
 
             if FLAGS.datasource == "continual_reacher":
-                if diff > 0.1:
-                    diff_env = 2000
-                else:
-                    diff_env = 0.05
+                diff_env = 2000
             else:
                 diff_env = 0.7
 
@@ -664,7 +669,7 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
                 break
 
             if FLAGS.linear_inverse_dynamics:
-                update_linear_weight(obs[-2], obs[-1], action, state_matrix, 0.1)
+                state_matrix = update_linear_weight(obs[-2], obs[-1], action, state_matrix, 0.1)
 
         ob = ob[:, None, None, :]
         dones = np.array(dones).transpose()
@@ -708,6 +713,11 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
         else:
             pos_batch = FLAGS.num_env * FLAGS.batch_size
 
+        if ob_pair is not None:
+            traj_action_encode = action.reshape((-1, 1, 1, FLAGS.action_dim))
+            encode_data = np.concatenate([ob_pair, np.tile(traj_action_encode, (1, FLAGS.total_frame, 1, 1))], axis=3)
+            pos_replay_buffer.add(encode_data)
+
         if len(pos_replay_buffer) > pos_batch:
             sample_data = pos_replay_buffer.sample(pos_batch)
             sample_ob = sample_data[:, :, :, :-FLAGS.action_dim]
@@ -722,15 +732,10 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
             else:
                 ob_pair, action = sample_ob, sample_actions
 
-        if ob_pair is not None:
-            traj_action_encode = action.reshape((-1, 1, 1, FLAGS.action_dim))
-            encode_data = np.concatenate([ob_pair, np.tile(traj_action_encode, (1, FLAGS.total_frame, 1, 1))], axis=3)
-            pos_replay_buffer.add(encode_data)
-
-
         if FLAGS.record_reacher_data:
-            if FLAGS.datasource == "continual_reacher" and len(pos_replay_buffer) > 900000:
-                dat = np.array(pos_replay_buffer._storage[:900000])
+            print("Length of the pos_replay_buffer is ", len(pos_replay_buffer))
+            if FLAGS.datasource == "continual_reacher" and len(pos_replay_buffer) > 120000:
+                dat = np.array(pos_replay_buffer._storage[:120000])
                 sample_ob = dat[:, :, 0, :-FLAGS.action_dim]
                 sample_actions = dat[:, 0, 0, -FLAGS.action_dim:]
                 np.savez("data/continual_reacher_model.npz", ob=sample_ob, action=sample_actions)
@@ -742,10 +747,13 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
         if ACTION_LABEL is not None:
             feed_dict[ACTION_LABEL] = action
 
+        if ob_pair is None:
+            continue
+
         batch_size = x_noise_neg.shape[0]
         if FLAGS.replay_batch and len(replay_buffer) > batch_size and not FLAGS.ff_model:
             replay_batch = replay_buffer.sample(int(batch_size))
-            replay_mask = (np.random.uniform(0, 1, (batch_size)) > 0.8)
+            replay_mask = (np.random.uniform(0, 1, (batch_size)) > 0.5)
             # feed_dict[X_NOISE][replay_mask] = replay_batch[replay_mask]
             feed_dict[X_NOISE][replay_mask] = replay_batch[replay_mask]
 
@@ -924,15 +932,20 @@ def train(target_vars, saver, sess, logger, dataloader, actions, resume_iter, ma
         for j, i in random_combo:
             label = dataloader[:, j - FLAGS.total_frame:j]
             label_i = label[perm_idx[i:i + FLAGS.batch_size]]
+            # data_corrupt = np.random.uniform(-1.0, 1.0, (
+            #     FLAGS.batch_size, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim))
+
             data_corrupt = np.random.uniform(-1.0, 1.0, (
-                FLAGS.batch_size, FLAGS.total_frame, FLAGS.input_objects, FLAGS.latent_dim))
+                FLAGS.batch_size, 1, FLAGS.input_objects, FLAGS.latent_dim))
+
+            data_corrupt = np.tile(data_corrupt, (1, FLAGS.total_frame, 1, 1))
 
             feed_dict = {X: label_i, X_NOISE: data_corrupt, lr: FLAGS.lr}
 
             if mask is not None:
                 mask_val = mask[perm_idx[i:i + FLAGS.batch_size], j - FLAGS.total_frame:j]
                 feed_dict[MASK] = mask_val
-                print("mask shape ", mask_val.shape)
+                # print("mask shape ", mask_val.shape)
 
             if ACTION_LABEL is not None:
                 feed_dict[ACTION_LABEL] = actions[perm_idx[i:i + FLAGS.batch_size], j - FLAGS.total_frame + 1]
@@ -1000,6 +1013,7 @@ def eval_collision(target_vars, sess, dataset_test, mask_test, dataset_test_gt):
     X_PLAN = target_vars['X_PLAN']
     MASK_PLAN = target_vars['mask_plan']
     x_joint = target_vars['x_joint']
+    cum_energies = target_vars['cum_energies']
 
     # Sample a series of random trajectories of a certain length data_test
     errors = []
@@ -1017,8 +1031,15 @@ def eval_collision(target_vars, sess, dataset_test, mask_test, dataset_test_gt):
         # print(dataset_test.shape)
         # assert False
 
-        pred_unmask = sess.run([x_joint], {X_PLAN: masked_traj, MASK_PLAN: mask})[0]
+        pred_unmask, plan_energies = sess.run([x_joint, cum_energies], {X_PLAN: masked_traj, MASK_PLAN: mask})
         true_unmask = dataset_test_gt[batch:batch+FLAGS.batch_size, it:it+FLAGS.plan_steps]
+
+        # print(pred_unmask[0, 0])
+        # print(true_unmask[0, 0])
+        # print(mask[0, 0])
+        # assert False
+
+        # print("plan_energies ", plan_energies)
 
         errors.append(np.abs(pred_unmask.squeeze() - true_unmask).mean())
         baseline_errors.append(np.abs(masked_traj - true_unmask).mean())
@@ -1026,8 +1047,6 @@ def eval_collision(target_vars, sess, dataset_test, mask_test, dataset_test_gt):
 
     print("Obtained an error of ", np.mean(errors))
     print("The original trajectory has  an error of ", np.mean(baseline_errors))
-
-
 
 
 def test(target_vars, saver, sess, logdir, data, actions, dataset_train, mean, std):
@@ -1310,12 +1329,9 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
             # if i == 0:
             #     cum_energy = tf.Print(cum_energy, [tf.pow(100 * cum_energy, 3)], "Energy on first timestep")
 
-            if i == 0:
-                cum_energies = cum_energies + 1000 * ((FLAGS.plan_steps - i * 0.7) / FLAGS.plan_steps) ** 7 * tf.pow(cum_energy, 3)
-            else:
-                cum_energies = cum_energies + (FLAGS.plan_steps - i * 0.7 / FLAGS.plan_steps) ** 7 * tf.pow(cum_energy, 3)
+            # cum_energies = cum_energies + (FLAGS.plan_steps - i * 0.5 / FLAGS.plan_steps) ** 5 * tf.pow(cum_energy, 3)
             # cum_energies = cum_energies + tf.pow(cum_energy, 3)
-            # cum_energies = cum_energies + cum_energy
+            cum_energies = cum_energies + cum_energy
 
         # cum_energies = tf.Print(cum_energies, [x_joint[0, 0], X_START[0, 0]], "trajectory")
 
@@ -1330,8 +1346,8 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
         # cum_energies = tf.Print(cum_energies, [tf.shape(cum_energies), tf.shape(X_END_EXPAND)], "cumulative energies")
         # score_weights = tf.Print(score_weights, [score_weights])
 
-        scaler_weight = tf.square(tf.to_float(tf.reshape(tf.range(FLAGS.plan_steps+1) / FLAGS.plan_steps, (1, FLAGS.plan_steps + 1, 1, 1))))
-        scaler_weight = tf.ones(1) * l2_weight
+        scaler_weight = tf.square(tf.to_float(tf.reshape(tf.range(FLAGS.plan_steps+1) / FLAGS.plan_steps, (1, FLAGS.plan_steps + 1, 1, 1)))) * l2_weight
+        # scaler_weight = tf.ones(1) * l2_weight
         if FLAGS.constraint_goal:
             if FLAGS.datasource == "maze" or FLAGS.datasource == "point":
                 goal_error = l2_weight * FLAGS.g_coeff * tf.reduce_mean(tf.square(scaler_weight * (x_joint[:, :] - X_END_EXPAND)), axis=[1, 2, 3])
@@ -1427,12 +1443,12 @@ def construct_eval_collision_model(model, weights, X_PLAN, target_vars={}):
 
         cum_energies = 0
 
-        for i in range(FLAGS.plan_steps - FLAGS.total_frame):
+        for i in range(FLAGS.plan_steps - FLAGS.total_frame + 1):
             cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights)
             cum_energies = cum_energies + cum_energy
 
         cum_energies = tf.reshape(cum_energies, (x_joint_shape[0], FLAGS.noise_sim))
-        score_weights = tf.nn.softmax(-cum_energies * 10000, axis=1)
+        score_weights = tf.nn.softmax(-cum_energies * 20000, axis=1)
         score_weights = tf.reshape(score_weights, (x_joint_shape[0], FLAGS.noise_sim, 1, 1, 1))
         x_joint = tf.reduce_sum(x_joint_tile * score_weights, axis=1)
 
@@ -1442,7 +1458,16 @@ def construct_eval_collision_model(model, weights, X_PLAN, target_vars={}):
 
     steps, x_joint = tf.while_loop(c, mppi_step, (steps, X_PLAN))
 
+    cum_energies = []
+    for i in range(FLAGS.plan_steps - FLAGS.total_frame + 1):
+        cum_energy = model.forward(x_joint[:, i:i + FLAGS.total_frame], weights, action_label=None)
+        cum_energies.append(cum_energy)
+        # cum_energies = tf.Print(cum_energies, [cum_energy], "Transition")
+
+    cum_energies = tf.concat(cum_energies, axis=1)
+
     target_vars['x_joint'] = tf.expand_dims(x_joint, axis=2)
+    target_vars['cum_energies'] = cum_energies
     target_vars['X_PLAN'] = X_PLAN
 
     return target_vars
@@ -1572,7 +1597,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
     x_mod = X_NOISE
     MASK = target_vars['mask']
 
-    mask_expand = tf.expand_dims(MASK, axis=3)
+    mask_expand = mask_expand_single = tf.expand_dims(MASK, axis=3)
 
     x_grads = []
     x_ees = []
@@ -1588,6 +1613,7 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
         weights = ff_model.construct_weights(scope="ff_model", weights=weights)
 
     steps = tf.constant(0)
+    steps_pos = tf.constant(0)
     c = lambda i, x, y: tf.less(i, FLAGS.num_steps)
 
     def mcmc_step(counter, x_mod, action_label):
@@ -1655,16 +1681,37 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
         return counter, x_mod, action_label
 
 
+    def mcmc_step_mask(counter, x_mod, action_label):
+        x_mod = x_mod + tf.random_normal(tf.shape(x_mod), mean=0.0, stddev=0.01) * mask_expand_single
+        energy_noise = model.forward(x_mod, weights, action_label=action_label, reuse=True, stop_at_grad=True)
+        lr = FLAGS.step_lr
+
+        x_grad = tf.gradients(FLAGS.temperature * energy_noise, [x_mod])[0]
+
+        x_mod = x_mod - lr * x_grad * mask_expand_single
+
+        counter = counter + 1
+
+        return counter, x_mod, action_label
+
+
     if FLAGS.mppi:
         steps, x_mod, action_label = tf.while_loop(c, mppi_step, (steps, x_mod, ACTION_NOISE_LABEL))
     else:
         steps, x_mod, action_label = tf.while_loop(c, mcmc_step, (steps, x_mod, ACTION_NOISE_LABEL))
 
     if FLAGS.datasource == "collision":
-        steps, X_new, action_label = tf.while_loop(c, mppi_step_mask, (steps, X, ACTION_NOISE_LABEL))
-        energy_pos = model.forward(X_new, weights, action_label=ACTION_LABEL)
+        c_collision = lambda i, x, y: tf.less(i, FLAGS.num_steps)
+        if FLAGS.mppi:
+            steps, X_new, action_label = tf.while_loop(c_collision, mppi_step_mask, (steps_pos, X, ACTION_NOISE_LABEL))
+        else:
+            steps, X_new, action_label = tf.while_loop(c_collision, mcmc_step_mask, (steps_pos, X, ACTION_NOISE_LABEL))
+
+        energy_pos = model.forward(tf.stop_gradient(X_new), weights, action_label=ACTION_LABEL)
+        x_off = tf.reduce_mean(tf.abs(X_new - X))
     else:
         energy_pos = model.forward(X, weights, action_label=ACTION_LABEL)
+        x_off = tf.reduce_mean(tf.abs(x_mod - X))
 
     if FLAGS.cond:
         if FLAGS.datasource != "reacher":
@@ -1687,7 +1734,6 @@ def construct_model(model, weights, X_NOISE, X, ACTION_LABEL, ACTION_NOISE_LABEL
         x_grad, action_grad = tf.gradients(FLAGS.temperature * energy_neg, [x_mod, action_label])
     else:
         x_grad, action_grad = tf.gradients(FLAGS.temperature * energy_neg, [x_mod])[0], tf.zeros(1)
-    x_off = tf.reduce_mean(tf.square(x_mod - X))
 
     if FLAGS.train:
         if FLAGS.objective == 'logsumexp':
@@ -1960,7 +2006,7 @@ def main():
                 # Mask out that portion of the dataset
                 dataset_old = dataset
 
-                dataset = dataset * (1 - mask[:, :, :, None]) + mask[:, :, :, None] * np.random.uniform(-1, 1, dataset.shape)
+                dataset = dataset * (1 - mask[:, :, :, None])
             else:
                 data = np.load(FLAGS.datadir + FLAGS.datasource + '.npz')
                 dataset = data['obs'][:, :, None, :]
