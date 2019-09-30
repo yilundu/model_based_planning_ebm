@@ -44,6 +44,7 @@ class ContinualReacher7DOFEnv(Reacher7DOFEnv):
             self.count = n
 
         self.model.site_pos[self.target_sid] = [0.1, 0.1, 0.1]
+        # self.target_reset()
 
         observation, _reward, done, _info = self._step(np.zeros(7))
         ob = self._get_obs()

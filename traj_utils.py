@@ -98,7 +98,7 @@ def linear_reacher_helper(s1, s2, a_prev, state_matrix):
     # print(s2.shape)
     # print(a_prev.shape)
     # print(state_matrix.shape)
-    lam = 0.1
+    lam = 0.3
     # Generate target of the form dxn
     target = (s2.transpose() - state_matrix[:, :17].dot(s1.transpose())).squeeze()
     target_2 = lam * a_prev.transpose().squeeze()

@@ -151,6 +151,7 @@ flags.DEFINE_bool('render_image', False, 'render images of trajectories for cont
 # If True, estimate physical params from latent variable
 flags.DEFINE_bool('phy_latent', True, 'If True, estimate physical params from latent variable')
 flags.DEFINE_bool('eval_collision', False, 'If evaluate collision between obstacles')
+flags.DEFINE_bool('trans_eval', False, 'evaluate the transition in a state')
 
 FLAGS.batch_size *= FLAGS.num_gpus
 
@@ -302,6 +303,7 @@ def get_avg_step_num(target_vars, sess, env):
                                             {X_START: x_start, X_END: x_end,
                                              X_PLAN: x_plan, ACTION_PLAN: actions})
             else:
+                print(x_end)
                 ACTION_PLAN = target_vars['ACTION_PLAN']
                 actions = np.random.uniform(-0.1, 0.1, (1, FLAGS.plan_steps, FLAGS.action_dim))
                 x_joint, output_actions, output_energy = sess.run([x_joint, output_actions, cum_energies],
@@ -343,18 +345,23 @@ def get_avg_step_num(target_vars, sess, env):
                         print("action shape ", action.shape)
 
                         obs, reward, done, _ = env.step(action)
-                    else:
+                    elif FLAGS.linear_inverse_dynamics:
                         action = output_actions[:, i]
                         print(action)
+                        obs, reward, done, _ = env.step(action)
+                    else:
+                        action = output_actions[0, i]
                         obs, reward, done, _ = env.step(action)
 
                     target_obs = x_joint[0, i + 1, 0]
                     cum_reward += reward
 
                     print("obs", obs)
+                    print(x_end)
                     print("target_obs", target_obs)
                     print("done?", done, "iter {}".format(i))
                     points.append(obs)
+                    # assert False
 
                     if done:
                         kill = True
@@ -366,11 +373,12 @@ def get_avg_step_num(target_vars, sess, env):
 
                     if FLAGS.datasource == "continual_reacher":
                         diff_dist = 0.3
+                        # diff_dist = 2000
                     else:
                         diff_dist = 0.55
 
                     if FLAGS.linear_inverse_dynamics and len(points) > 1:
-                        update_linear_weight(points[-2][None, :], points[-1][None, :], action[None, :], state_matrix, 0.1)
+                        update_linear_weight(points[-2][None, :], points[-1][None, :], action[None, :], state_matrix, 8.0)
 
                     if np.abs(target_obs - obs).mean() > diff_dist:
                         print("replanning")
@@ -476,6 +484,26 @@ def get_avg_step_num(target_vars, sess, env):
         print("average number of steps:", average_length)
 
 
+def trans_eval(target_vars, sess):
+    tot_iter = int(FLAGS.nsteps // FLAGS.num_env)
+
+    X = target_vars['X']
+    energy_pos = target_vars['energy_pos']
+
+    dat_start = np.array([[0.05, 0.05]])
+    n = 30
+    lim = 0.1
+    x, y = np.meshgrid(np.linspace(-lim, lim, n), np.linspace(-lim, lim, n))
+    coord = np.concatenate([x.flatten()[:, None], y.flatten()[:, None]], axis=1)
+    dat_start = np.tile(dat_start, (coord.shape[0], 1))
+    dat = np.concatenate([dat_start[:, None, None, :], coord[:, None, None, :]], axis=1)
+    energies = sess.run([energy_pos], {X: dat})[0]
+    energies = energies.reshape((n, n))
+    df = pd.DataFrame(data=energies, index=np.linspace(-lim, lim, n), columns=np.linspace(-lim, lim, n))
+    ax = sns.heatmap(df)
+    plt.savefig("trans_eval.png")
+
+
 def rl_train(target_vars, saver, sess, logger, resume_iter, env):
     tot_iter = int(FLAGS.nsteps // FLAGS.num_env)
 
@@ -575,7 +603,7 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
         elif FLAGS.datasource == "reacher":
             x_end = np.tile(np.array([[0.7, 0.5]]), (FLAGS.num_env, 1))[:, None, None, :]
         elif FLAGS.datasource == "continual_reacher":
-            x_end = ob[:, :, :, -6:-3]
+            x_end = ob[:, :, :, -3:]
         else:
             x_end = np.tile(np.array([[0.5, 0.5]]), (FLAGS.num_env, 1))[:, None, None, :]
 
@@ -598,6 +626,7 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
                 traj_actions = linear_reacher_inverse_dynamics(x_traj.squeeze(), env_action, state_matrix)
                 # print(traj_actions.shape)
                 # assert False
+                # print(traj_actions)
                 traj_actions = np.clip(traj_actions, -1, 1)
                 # print(state_matrix)
         elif FLAGS.datasource == "continual_reacher" and FLAGS.gt_inverse_dynamics:
@@ -626,10 +655,10 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
 
             # print("Hand position ", ob[0])
             # print("Action ", action[0])
-            if bp == 0 and FLAGS.datasource != "continual_reacher":
+            # if bp == 0 and FLAGS.datasource != "continual_reacher":
                 # print(x_traj[0, 0], x_traj[0, 1], ob[0])
             #     target_ob = x_traj[:, bp + 1, 0]
-                print("x_traj", x_traj[0, :, 0])
+                # print("x_traj", x_traj[0, :, 0])
             #     print("Abs dist: ", np.mean(np.abs(ob - target_ob)))
             # #     print("Trajectory: ", x_traj[0, -2:])
 
@@ -669,7 +698,8 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
                 break
 
             if FLAGS.linear_inverse_dynamics:
-                state_matrix = update_linear_weight(obs[-2], obs[-1], action, state_matrix, 0.1)
+                # print("Updating with action", action)
+                state_matrix = update_linear_weight(obs[-2], obs[-1], action, state_matrix, 1.0)
 
         ob = ob[:, None, None, :]
         dones = np.array(dones).transpose()
@@ -749,6 +779,9 @@ def rl_train(target_vars, saver, sess, logger, resume_iter, env):
 
         if ob_pair is None:
             continue
+
+        if num_env_steps > 50000:
+            assert False
 
         batch_size = x_noise_neg.shape[0]
         if FLAGS.replay_batch and len(replay_buffer) > batch_size and not FLAGS.ff_model:
@@ -1241,13 +1274,13 @@ def construct_plan_model(model, weights, X_PLAN, X_START, X_END, ACTION_LABEL, c
 
         if FLAGS.constraint_vel:
             if FLAGS.datasource == "continual_reacher":
-                cum_energies = cum_energies + FLAGS.v_coeff * tf.reduce_mean(tf.square(x_joint[:, 1:, :, :-3] - x_joint[:, :-1, :, :-3]))
+                cum_energies = cum_energies + FLAGS.v_coeff * tf.reduce_mean(tf.square(x_joint[:, 1:, :, :-6] - x_joint[:, :-1, :, :-6]))
             else:
                 cum_energies = cum_energies + FLAGS.v_coeff * tf.reduce_mean(tf.square(x_joint[:, 1:] - x_joint[:, :-1]))
 
         if FLAGS.constraint_accel:
             if FLAGS.datasource == "continual_reacher":
-                cum_energies = cum_energies + FLAGS.a_coeff * tf.reduce_mean(tf.square(x_joint[:, 2:, :, :-3] - 2 * x_joint[:, 1:-1, :, :-3] + x_joint[:, :-2, :, :-3]))
+                cum_energies = cum_energies + FLAGS.a_coeff * tf.reduce_mean(tf.square(x_joint[:, 2:, :, :-6] - 2 * x_joint[:, 1:-1, :, :-6] + x_joint[:, :-2, :, :-6]))
             else:
                 cum_energies = cum_energies + FLAGS.a_coeff * tf.reduce_mean(tf.square(x_joint[:, 2:] - 2 * x_joint[:, 1:-1] + x_joint[:, :-2]))
         # if FLAGS.constraint_goal:
@@ -1944,7 +1977,9 @@ def main():
         resume_itr = FLAGS.resume_iter
         saver.restore(sess, model_file)
 
-    if FLAGS.rl_train:
+    if FLAGS.trans_eval:
+        trans_eval(target_vars, sess)
+    elif FLAGS.rl_train:
 
         datasource = FLAGS.datasource
         def make_env(rank):
