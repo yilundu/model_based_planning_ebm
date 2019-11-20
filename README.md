@@ -1,4 +1,4 @@
-Preliminary (uncleaned code) for Model Based Planning with Energy Based Models
+Code for Model Based Planning with Energy Based Models
 
 Command for training on continual reacher environment:
 
