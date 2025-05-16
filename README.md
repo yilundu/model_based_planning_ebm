@@ -1,4 +1,4 @@
-Code for Model Based Planning with Energy Based Models
+# Code for Model Based Planning with Energy Based Models
 
 Command for training on continual reacher environment:
 
@@ -16,4 +16,13 @@ python train.py --exp=<exp_name> --plan_steps=20 --num_plan_steps=80 --datasourc
 --resume_iter=<train iteration> --n_benchmark_exp=1 --rl_train=False --train=False
 ```
 
-#TODO Clean up code
+Bibtex for paper:
+
+```
+@article{Du2019ModelBP,
+  title={Model Based Planning with Energy Based Models},
+  author={Yilun Du and Toru Lin and Igor Mordatch},
+  journal={CORL},
+  year={2019}
+}
+```
